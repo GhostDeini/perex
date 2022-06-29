@@ -51,12 +51,12 @@ def getECdf(EC_filename, with_settings=0, with_header_dict=0):
                 headerLineswoutSettings=linesEC[:mainHeaderIdx]
                 df2=None
                 print('Not able to get settings dataframe')
-            headerDict=getHeaderDict(headerLineswoutSettings)
+            headerDict=getECHeaderDict(headerLineswoutSettings)
             df.attrs = headerDict
             return df, df2
         else:
             headerLineswoutSettings=linesEC[:mainHeaderIdx]
-            headerDict=getHeaderDict(headerLineswoutSettings)
+            headerDict=getECHeaderDict(headerLineswoutSettings)
             df.attrs = headerDict
             return df
 
@@ -110,7 +110,7 @@ def ECsettingsdf_transform(set_df):
     set_df.drop(columns = toDel, inplace = True)
     return set_df
 
-def getHeaderDict(text):
+def getECHeaderDict(text):
     headerDict = {}
     newList = []
     for i,line in enumerate(text):
