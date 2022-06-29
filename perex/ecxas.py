@@ -21,40 +21,44 @@ def getECdf(EC_filename, with_settings=0, with_header_dict=0):
         # get number of header lines
         mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
         rawHeader = "".join(linesEC[:mainHeaderIdx])
-        # get acquisition date
-        keywordDate='Acquisition started on :'
-        acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(), "%m/%d/%Y %H:%M:%S.%f")
         # MAIN DF
         df=pd.read_csv(EC_filename, header=mainHeaderIdx, encoding='ISO-8859-1', sep="\t", skip_blank_lines=False, decimal=delim)
         df=df.dropna(how='all', axis=1)
-        # add new datetime column with format YYYY-MM-DD HH:mm:ss.f
-        df['datetime']=acDate+pd.TimedeltaIndex(df['time/s'], unit='S')
-        # reconvert to string format
-        df['datetime']=df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
-        # SETTINGS DF
-        if with_settings==1:
-            if any(i for i,line in enumerate(linesEC) if line.startswith('Ns')):
+        # get acquisition date
+        keywordDate='Acquisition started on :'
+        if keywordDate in rawEC:
+            acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(), "%m/%d/%Y %H:%M:%S.%f")
+            # add new datetime column with format YYYY-MM-DD HH:mm:ss.f
+            df['datetime']=acDate+pd.TimedeltaIndex(df['time/s'], unit='S')
+            # reconvert to string format
+            df['datetime']=df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
+        # settings lines
+        if any(i for i,line in enumerate(linesEC) if line.startswith('Ns')):
                 # get settings dataframe
                 settingsHeaderIdx=next(i for i,line in enumerate(linesEC) if line.startswith('Ns'))
                 settingsBottomIdx=next(i for i,line in enumerate(linesEC[settingsHeaderIdx:]) if len(line)==1)+settingsHeaderIdx
                 setLines=linesEC[settingsHeaderIdx:settingsBottomIdx]
+        # settings df
+        if with_settings==1:
+            try: setLines
+            except NameError: setLines = None
+            if setLines:
+                # get settings dataframe
                 df2=ECsettingsdf(setLines,delim)
-                rawHeaderwoutSettings=linesEC[:settingsHeaderIdx]
+                headerLineswoutSettings=linesEC[:settingsHeaderIdx]
+                headerLineswoutSettings.extend(linesEC[settingsBottomIdx:mainHeaderIdx])
             else:
-                rawHeaderwoutSettings=linesEC[:mainHeaderIdx]
-                df2='\n'
+                headerLineswoutSettings=linesEC[:mainHeaderIdx]
+                df2=None
                 print('Not able to get settings dataframe')
-            if with_header_dict==1:
-                headerDict=getHeaderDict(rawHeaderwoutSettings)
-                return df, df2, headerDict,acDate
-            else:
-                return df, df2
+            headerDict=getHeaderDict(headerLineswoutSettings)
+            df.attrs = headerDict
+            return df, df2
         else:
-            if with_header_dict==1:
-                headerDict=getHeaderDict(rawHeaderwoutSettings)
-                return df, headerDict
-            else:
-                return df
+            headerLineswoutSettings=linesEC[:mainHeaderIdx]
+            headerDict=getHeaderDict(headerLineswoutSettings)
+            df.attrs = headerDict
+            return df
 
 def ECsettingsdf(setLines,delim):
     if delim==',':
@@ -121,7 +125,8 @@ def getHeaderDict(text):
                 newList[-1]+=' : '+line.strip()+','
     #WARNING
     newList[0]='File : '+newList[0]
-    newList[2]='Technique : '+newList[2]
+    if len(newList)>2:
+        newList[2]='Technique : '+newList[2]
     
     for i,line in enumerate(newList):
         if ':' in line:
@@ -130,6 +135,11 @@ def getHeaderDict(text):
                 headerDict[key.strip()]+=', '+value.strip()
             else:
                 headerDict[key.strip()]=value.strip()
+        elif ('Loop' in line) and ('from point number' in line):
+            frmIdx=line.find('from')
+            editLine=line[0:frmIdx]+':'+line[frmIdx:]
+            key, value = editLine.split(':',1)
+            headerDict[key.strip()]=value.strip()
     return headerDict
 
 def getXASfilesdf(XAS_folder):
