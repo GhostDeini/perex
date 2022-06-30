@@ -1,2 +1,1 @@
-# perex
-# Python Environment for Relating Electrochemistry and XAS data
+# perex - Python Environment for Relating Electrochemistry and XAS data
