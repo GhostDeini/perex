@@ -38,10 +38,12 @@ def getECdf(EC_filename, with_settings=0, with_header_dict=0):
                 settingsHeaderIdx=next(i for i,line in enumerate(linesEC) if line.startswith('Ns'))
                 settingsBottomIdx=next(i for i,line in enumerate(linesEC[settingsHeaderIdx:]) if len(line)==1)+settingsHeaderIdx
                 setLines=linesEC[settingsHeaderIdx:settingsBottomIdx]
+
+        try: setLines
+        except NameError: setLines = None
+        
         # settings df
         if with_settings==1:
-            try: setLines
-            except NameError: setLines = None
             if setLines:
                 # get settings dataframe
                 df2=ECsettingsdf(setLines,delim)
@@ -55,7 +57,11 @@ def getECdf(EC_filename, with_settings=0, with_header_dict=0):
             df.attrs = headerDict
             return df, df2
         else:
-            headerLineswoutSettings=linesEC[:mainHeaderIdx]
+            if setLines:
+                headerLineswoutSettings=linesEC[:settingsHeaderIdx]
+                headerLineswoutSettings.extend(linesEC[settingsBottomIdx:mainHeaderIdx])
+            else:
+                headerLineswoutSettings=linesEC[:mainHeaderIdx]
             headerDict=getECHeaderDict(headerLineswoutSettings)
             df.attrs = headerDict
             return df
@@ -131,14 +137,24 @@ def getECHeaderDict(text):
     for i,line in enumerate(newList):
         if ':' in line:
             key, value = line.strip(',').split(':',1)
-            if key.strip() in headerDict:
-                headerDict[key.strip()]+=', '+value.strip()
-            else:
-                headerDict[key.strip()]=value.strip()
-        elif ('Loop' in line) and ('from point number' in line):
+        elif ('Loop' in line) and ('from point number' in line) or ('compliance from' in line):
             frmIdx=line.find('from')
             editLine=line[0:frmIdx]+':'+line[frmIdx:]
             key, value = editLine.split(':',1)
+        elif '(software)' in line:
+            softIdx=line.find('(software)')
+            editLine='Software :'+line[0:softIdx]
+            key, value = editLine.split(':',1)
+        elif '(firmware)' in line:
+            firmIdx=line.find('(firmware)')
+            editLine='Firmware :'+line[0:firmIdx]
+            key, value = editLine.split(':',1)
+        elif ':' not in line:
+            editLine=line+': '
+            key, value = editLine.split(':',1)
+        if key.strip() in headerDict:
+            headerDict[key.strip()]+=', '+value.strip()
+        else:
             headerDict[key.strip()]=value.strip()
     return headerDict
 
@@ -160,7 +176,9 @@ def getXASfilesdf(XAS_folder):
                 XAS_filelist.append([os.path.basename(f),startTime,elapsedTime])
         #XAS files df
         XAS_files_df=pd.DataFrame(columns = ['filename','datetime','elapsed time/s'],data=XAS_filelist)
-        XAS_files_df=XAS_files_df.sort_values(by='datetime', ignore_index=True)
+        #XAS_files_df=XAS_files_df.sort_values(by='datetime', ignore_index=True)
+        XAS_files_df['average time XAS']=XAS_files_df['datetime']+pd.TimedeltaIndex(XAS_files_df['elapsed time/s'], unit='S')
+        XAS_files_df=XAS_files_df.sort_values(by='average time XAS', ignore_index=True)
     return XAS_files_df
 
 def mergeEC_XASdfs(EC_df,XAS_files_df):
@@ -170,20 +188,21 @@ def mergeEC_XASdfs(EC_df,XAS_files_df):
     #merged_df = pd.merge_asof(left=XAS_files_df,right=EC_df,on='datetime',direction='nearest',tolerance=pd.Timedelta('10 min'))
     merged_df = pd.merge_asof(XAS_files_df.rename(columns={'datetime':'datetime XAS','elapsed time/s':'elapsed time XAS/s'}),
                               EC_df.rename(columns={'datetime':'datetime EC'}),
-                              left_on='datetime XAS',
+                              left_on='average time XAS',
                               right_on='datetime EC',
                               direction='nearest',
                               tolerance=pd.Timedelta('10 min'))
-    merged_df['endtime XAS']=merged_df['datetime XAS']+pd.TimedeltaIndex(merged_df['elapsed time XAS/s'], unit='S')
+    #merged_df['endtime XAS']=merged_df['datetime XAS']+pd.TimedeltaIndex(merged_df['elapsed time XAS/s'], unit='S')
     merged_df.rename(columns = {'datetime XAS':'starttime XAS'}, inplace = True)
     # choose which columns to have in your text file
-    cols = ['filename','starttime XAS','elapsed time XAS/s','endtime XAS','datetime EC','Ewe/V', '<I>/mA', 'x']
+    cols = ['filename','starttime XAS','elapsed time XAS/s','average time XAS','datetime EC','Ewe/V', '<I>/mA', 'x']
     merged_df = merged_df[cols]
-    merged_df['absolute time/s'] = (merged_df['datetime EC']-merged_df['datetime EC'][0]).dt.total_seconds()
+    #merged_df['absolute time/s'] = (merged_df['datetime EC']-merged_df['datetime EC'][0]).dt.total_seconds()+merged_df['elapsed time XAS/s'][0]
+    merged_df['absolute time/s'] = merged_df['elapsed time XAS/s'].cumsum()
     merged_df['absolute time/min'] = merged_df['absolute time/s']/60
     merged_df['absolute time/h'] = merged_df['absolute time/min']/60
     merged_df['starttime XAS'] = merged_df['starttime XAS'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
-    merged_df['endtime XAS'] = merged_df['endtime XAS'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
+    merged_df['average time XAS'] = merged_df['average time XAS'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
     if merged_df.dropna(how='all', axis=0, subset=['Ewe/V','<I>/mA','x']).shape[0]==0:
         raise ValueError("Could not correctly merge the EC file to a list of XAS files. Please check the folder selection.")
     else:
@@ -195,4 +214,4 @@ def get_output(EC_filename,XAS_folder,output_name):
     XASdf=getXASfilesdf(XAS_folder)
     merged=mergeEC_XASdfs(electrodf,XASdf)
     merged.to_csv(output_name, index=False, sep='\t')
-    return
+    print('Output file succesfully created!')
