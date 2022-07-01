@@ -1,6 +1,9 @@
 import numpy as np, pandas as pd, re, os, pathlib, glob
 from datetime import datetime, timedelta
 from time import mktime
+import matplotlib.pyplot as plt
+from matplotlib.pyplot import cm
+from matplotlib.colors import Normalize
 #from galvani import BioLogic
 
 
@@ -8,63 +11,61 @@ def getECdf(EC_filename, with_settings=0, with_header_dict=0):
     filename, file_extension = os.path.splitext(EC_filename)
     if file_extension!='.mpt': #any(line for line in enumerate(linesEC) if line.startswith('Nb header lines'))==False or 
         raise ValueError("File type not suppported. It must have an .mpt extension.")
+    f = open(EC_filename, "r", encoding="ISO-8859-1")
+    linesEC = f.readlines()
+    rawEC = "".join(linesEC)
+    f.close()
+    # check which delimiter is used for decimals
+    if rawEC.count('.')>rawEC.count(','):
+        delim='.'
     else:
-        f = open(EC_filename, "r", encoding="ISO-8859-1")
-        linesEC = f.readlines()
-        rawEC = "".join(linesEC)
-        f.close()
-        # check which delimiter is used for decimals
-        if rawEC.count('.')>rawEC.count(','):
-            delim='.'
-        else:
-            delim=','
-        # get number of header lines
-        mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
-        rawHeader = "".join(linesEC[:mainHeaderIdx])
-        # MAIN DF
-        df=pd.read_csv(EC_filename, header=mainHeaderIdx, encoding='ISO-8859-1', sep="\t", skip_blank_lines=False, decimal=delim)
-        df=df.dropna(how='all', axis=1)
-        # get acquisition date
-        keywordDate='Acquisition started on :'
-        if keywordDate in rawEC:
-            acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(), "%m/%d/%Y %H:%M:%S.%f")
-            # add new datetime column with format YYYY-MM-DD HH:mm:ss.f
-            df['datetime']=acDate+pd.TimedeltaIndex(df['time/s'], unit='S')
-            # reconvert to string format
-            df['datetime']=df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
-        # settings lines
-        if any(i for i,line in enumerate(linesEC) if line.startswith('Ns')):
-                # get settings dataframe
-                settingsHeaderIdx=next(i for i,line in enumerate(linesEC) if line.startswith('Ns'))
-                settingsBottomIdx=next(i for i,line in enumerate(linesEC[settingsHeaderIdx:]) if len(line)==1)+settingsHeaderIdx
-                setLines=linesEC[settingsHeaderIdx:settingsBottomIdx]
+        delim=','
+    # get number of header lines
+    mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
+    rawHeader = "".join(linesEC[:mainHeaderIdx])
+    # MAIN DF
+    df=pd.read_csv(EC_filename, header=mainHeaderIdx, encoding='ISO-8859-1', sep="\t", skip_blank_lines=False, decimal=delim)
+    df=df.dropna(how='all', axis=1)
+    # get acquisition date
+    keywordDate='Acquisition started on :'
+    if keywordDate in rawEC:
+        acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(), "%m/%d/%Y %H:%M:%S.%f")
+        # add new datetime column with format YYYY-MM-DD HH:mm:ss.f
+        df['datetime']=acDate+pd.TimedeltaIndex(df['time/s'], unit='S')
+        # reconvert to string format
+        df['datetime']=df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
+    # settings lines
+    if any(i for i,line in enumerate(linesEC) if line.startswith('Ns')):
+        # get settings dataframe
+        settingsHeaderIdx=next(i for i,line in enumerate(linesEC) if line.startswith('Ns'))
+        settingsBottomIdx=next(i for i,line in enumerate(linesEC[settingsHeaderIdx:]) if len(line)==1)+settingsHeaderIdx
+        setLines=linesEC[settingsHeaderIdx:settingsBottomIdx]
 
-        try: setLines
-        except NameError: setLines = None
-        
-        # settings df
-        if with_settings==1:
-            if setLines:
-                # get settings dataframe
-                df2=ECsettingsdf(setLines,delim)
-                headerLineswoutSettings=linesEC[:settingsHeaderIdx]
-                headerLineswoutSettings.extend(linesEC[settingsBottomIdx:mainHeaderIdx])
-            else:
-                headerLineswoutSettings=linesEC[:mainHeaderIdx]
-                df2=None
-                print('Not able to get settings dataframe')
-            headerDict=getECHeaderDict(headerLineswoutSettings)
-            df.attrs = headerDict
-            return df, df2
+    try: setLines
+    except NameError: setLines = None
+    # settings df
+    if with_settings==1:
+        if setLines:
+            # get settings dataframe
+            df2=ECsettingsdf(setLines,delim)
+            headerLineswoutSettings=linesEC[:settingsHeaderIdx]
+            headerLineswoutSettings.extend(linesEC[settingsBottomIdx:mainHeaderIdx])
         else:
-            if setLines:
-                headerLineswoutSettings=linesEC[:settingsHeaderIdx]
-                headerLineswoutSettings.extend(linesEC[settingsBottomIdx:mainHeaderIdx])
-            else:
-                headerLineswoutSettings=linesEC[:mainHeaderIdx]
-            headerDict=getECHeaderDict(headerLineswoutSettings)
-            df.attrs = headerDict
-            return df
+            headerLineswoutSettings=linesEC[:mainHeaderIdx]
+            df2=None
+            print('Not able to get settings dataframe')
+        headerDict=getECHeaderDict(headerLineswoutSettings)
+        df.attrs = headerDict
+        return df, df2
+    else:
+        if setLines:
+            headerLineswoutSettings=linesEC[:settingsHeaderIdx]
+            headerLineswoutSettings.extend(linesEC[settingsBottomIdx:mainHeaderIdx])
+        else:
+            headerLineswoutSettings=linesEC[:mainHeaderIdx]
+        headerDict=getECHeaderDict(headerLineswoutSettings)
+        df.attrs = headerDict
+        return df
 
 def ECsettingsdf(setLines,delim):
     if delim==',':
@@ -215,3 +216,110 @@ def get_output(EC_filename,XAS_folder,output_name):
     merged=mergeEC_XASdfs(electrodf,XASdf)
     merged.to_csv(output_name, index=False, sep='\t')
     print('Output file succesfully created!')
+
+def plotUI_vs_time(ec_path,length=15,height=5):
+    electrodf=getECdf(ec_path)
+    fig, ax1 = plt.subplots(figsize=(length,height))
+    # plot V vs. time
+    ax1.plot(electrodf['time/s']/3600,electrodf['Ewe/V'],color="blue")
+    # add an additional y axis for the current
+    ax2 = ax1.twinx()
+    # and plot I vs. time
+    ax2.plot(electrodf['time/s']/3600,electrodf['<I>/mA'],color="green")
+    # set the labels and the colors of your curves
+    ax1.set_xlabel("Time/h")
+    ax1.set_ylabel("Ewe/V",color="blue")
+    ax2.set_ylabel("<I>/mA",color="green")
+
+    # let's also color the axes
+    ax1.tick_params(axis='y',colors="blue")
+    ax2.tick_params(axis='y',colors="green")
+    ax2.spines['right'].set_color("green")
+    return
+
+def plotCapacity_vs_U(ec_path,nb_cycle=None,length=8,height=5):
+    electrodf=getECdf(ec_path)
+    cyclesIdx=electrodf.groupby(['half cycle'])['half cycle'].size().cumsum().tolist()
+    cyclesIdx.insert(0,0)
+    n_charge=len(cyclesIdx[1::2])
+    n_discharge=len(cyclesIdx[2::2])
+    n=len(cyclesIdx)/2
+    color_charge = cm.Greys(np.linspace(0.5, 0.8, n_charge))
+    color_discharge = cm.Reds(np.linspace(0.5, 0.8, n_discharge))
+    fig, ax = plt.subplots(figsize=(length,height))
+    if nb_cycle:
+        if nb_cycle>n:
+            raise ValueError("nb_cycle higher than cycles performed.")
+        elif nb_cycle<1:
+            raise ValueError("Not a valid nb_cycle.")
+        for i, c in zip(range(int(n_charge)), color_charge):
+            if i==nb_cycle-1:
+                subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
+                ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
+        for i, c in zip(range(int(n_discharge)), color_discharge):
+            if i==nb_cycle-1:
+                subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
+                ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
+                ax.set_xlabel("Potential V vs. Li/Li+")
+    else:
+        if nb_cycle==0:
+            raise ValueError("Not a valid nb_cycle.")
+        for i, c in zip(range(int(n_charge)), color_charge):
+            subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
+            ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
+        for i, c in zip(range(int(n_discharge)), color_discharge):
+            subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
+            ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
+            ax.set_ylabel("Capacity mAh g-1")
+            ax.set_xlabel("Potential V vs. Li/Li+")
+    return
+
+def plotdQdU_vs_U(ec_path,nb_cycle=None,reduce_by=1,boxcar=1,colormap='plasma',length=10,height=6):
+    electrodf=getECdf(ec_path)
+    electrodf['dQdV']=electrodf['Capacity/mA.h'].diff()/electrodf['Ewe/V'].diff()
+    # apply filters/smoothing
+    electrodf=electrodf.iloc[::reduce_by]
+    electrodf['dQdV']=electrodf['dQdV'].rolling(boxcar).mean()
+    
+    cyclesIdx=electrodf.groupby(['half cycle'])['half cycle'].size().cumsum().tolist()
+    cyclesIdx.insert(0,0)
+    cycleNumber=np.arange(0,np.ceil(len(cyclesIdx)/2),1)
+    n_charge=len(cyclesIdx[1::2])
+    cm=plt.get_cmap(colormap)
+    color_dqdv=cm(np.linspace(0, 1, n_charge))
+    
+    fig, ax = plt.subplots(figsize=(length,height))
+    if nb_cycle:
+        if nb_cycle>n_charge:
+            raise ValueError("nb_cycle higher than cycles performed.")
+        elif nb_cycle<1:
+            raise ValueError("Not a valid nb_cycle.")
+        for i, c in zip(range(int(n_charge)), color_dqdv):
+            if i==nb_cycle-1:
+                subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
+                ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
+                if i*2+1<len(cyclesIdx)-1:
+                    subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
+                    ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
+    else:
+        if nb_cycle==0:
+            raise ValueError("Not a valid nb_cycle.")
+        for i, c in zip(range(int(n_charge)), color_dqdv):
+            #subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
+            subdf=electrodf[electrodf['half cycle']==i*2]
+            ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
+            if i*2+1<=electrodf['half cycle'].max():
+                subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
+                ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
+    # y limits
+    ylim=(abs(electrodf['dQdV'].quantile(0.95))+abs(electrodf['dQdV'].quantile(0.05)))/2
+    ax.set_ylabel("dQ/dV")
+    ax.set_xlabel("Potential V vs. Li/Li+")
+    #ax.set_xlim(3.,4.3)
+    ax.set_ylim(-ylim,ylim)
+    
+    norm = Normalize(vmin=int(np.ceil(min(cycleNumber)/2)), vmax=int(np.ceil(max(cycleNumber)/2)))
+    sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
+    cbar = fig.colorbar(cm)
+    cbar.set_label('Cycle', rotation=270, labelpad=10)
+    return
