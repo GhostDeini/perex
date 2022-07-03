@@ -4,6 +4,7 @@ from time import mktime
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 from matplotlib.colors import Normalize
+from scipy.signal import savgol_filter
 #from galvani import BioLogic
 
 
@@ -227,99 +228,124 @@ def plotUI_vs_time(ec_path,length=15,height=5):
     # and plot I vs. time
     ax2.plot(electrodf['time/s']/3600,electrodf['<I>/mA'],color="green")
     # set the labels and the colors of your curves
-    ax1.set_xlabel("Time/h")
-    ax1.set_ylabel("Ewe/V",color="blue")
-    ax2.set_ylabel("<I>/mA",color="green")
+    ax1.set_xlabel("Time/h",fontsize=14)
+    ax1.set_ylabel("Ewe/V",color="blue",fontsize=14)
+    ax2.set_ylabel("<I>/mA",color="green",fontsize=14)
 
     # let's also color the axes
     ax1.tick_params(axis='y',colors="blue")
     ax2.tick_params(axis='y',colors="green")
     ax2.spines['right'].set_color("green")
+    ax1.tick_params(axis='both', labelsize=12)
+    ax2.tick_params(axis='both', labelsize=12)
     return
 
 def plotCapacity_vs_U(ec_path,nb_cycle=None,length=8,height=5):
     electrodf=getECdf(ec_path)
-    cyclesIdx=electrodf.groupby(['half cycle'])['half cycle'].size().cumsum().tolist()
-    cyclesIdx.insert(0,0)
-    n_charge=len(cyclesIdx[1::2])
-    n_discharge=len(cyclesIdx[2::2])
-    n=len(cyclesIdx)/2
-    color_charge = cm.Greys(np.linspace(0.5, 0.8, n_charge))
-    color_discharge = cm.Reds(np.linspace(0.5, 0.8, n_discharge))
-    fig, ax = plt.subplots(figsize=(length,height))
-    if nb_cycle:
-        if nb_cycle>n:
+    min_cycles=int(electrodf['cycle number'].min())
+    total_cycles=int(electrodf['cycle number'].max())
+    min_half_cycles=int(electrodf['half cycle'].min())
+    total_half_cycles=int(electrodf['half cycle'].max())
+    
+    try:
+        nb_cycle=int(nb_cycle)
+        if nb_cycle>total_cycles:
             raise ValueError("nb_cycle higher than cycles performed.")
-        elif nb_cycle<1:
+        elif nb_cycle<min_cycles:
             raise ValueError("Not a valid nb_cycle.")
-        for i, c in zip(range(int(n_charge)), color_charge):
-            if i==nb_cycle-1:
-                subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
-                ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
-        for i, c in zip(range(int(n_discharge)), color_discharge):
-            if i==nb_cycle-1:
-                subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
-                ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
-                ax.set_xlabel("Potential V vs. Li/Li+")
-    else:
-        if nb_cycle==0:
-            raise ValueError("Not a valid nb_cycle.")
-        for i, c in zip(range(int(n_charge)), color_charge):
-            subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
-            ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
-        for i, c in zip(range(int(n_discharge)), color_discharge):
-            subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
-            ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=c)
-            ax.set_ylabel("Capacity mAh g-1")
-            ax.set_xlabel("Potential V vs. Li/Li+")
+        else:
+            nb_cycle=[nb_cycle]
+    except ValueError: raise ValueError('Not a valid nb_cycle.')
+    except: pass
+        
+    if not nb_cycle:
+        #if nb_cycle==0:
+        #    raise ValueError("Not a valid nb_cycle.")
+        #else:
+        nb_cycle=range(min_cycles,total_cycles+1)
+    #elif 0 in nb_cycle:
+    #    raise ValueError("A cycle number must be higher than 0.")
+
+    #color_charge = cm.seismic(np.linspace(0, 0.5, (total_cycles-min_cycles+1)+2))[1:-1]
+    color_charge = cm.seismic(np.linspace(0, 0.5, len(nb_cycle)+2))[1:-1]
+    #color_discharge = cm.seismic(np.linspace(1, 0.5, (total_cycles-min_cycles+1)+2))[1:-1]
+    color_discharge = cm.seismic(np.linspace(1, 0.5, len(nb_cycle)+2))[1:-1]
+    
+    fig, ax = plt.subplots(figsize=(length,height))
+    i=1
+    for half_cycle in range(min_half_cycles,total_half_cycles+1):
+        subdf=electrodf[electrodf['half cycle']==half_cycle]
+        cycle_number=int(subdf['cycle number'].mean())
+        if cycle_number in nb_cycle:
+            if (half_cycle % 2) == 0:
+                ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=color_charge[int(np.floor(i/2))])
+            else:
+                ax.scatter(subdf['Ewe/V'],subdf['Capacity/mA.h'],s=0.2,color=color_discharge[int(np.floor(i/2))])
+            i+=0.5
+    
+    ax.set_ylabel("Capacity mAh$\cdot$g$^{-1}$",fontsize=14)
+    ax.set_xlabel("Potential V vs. Li/Li$^+$",fontsize=14)
+    ax.tick_params(axis='both', labelsize=12)
     return
 
-def plotdQdU_vs_U(ec_path,nb_cycle=None,reduce_by=1,boxcar=1,colormap='plasma',length=10,height=6):
+def plotdQdU_vs_U(ec_path,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colormap='plasma',length=10,height=6):
     electrodf=getECdf(ec_path)
+    min_cycles=int(electrodf['cycle number'].min())
+    total_cycles=int(electrodf['cycle number'].max())
+    min_total_half_cycles=int(electrodf['half cycle'].min())
+    total_half_cycles=int(electrodf['half cycle'].max())
+    
+    try:
+        nb_cycle=int(nb_cycle)
+        if nb_cycle>total_cycles:
+            raise ValueError("nb_cycle higher than cycles performed.")
+        elif nb_cycle<min_cycles:
+            raise ValueError("Not a valid nb_cycle.")
+        else:
+            nb_cycle=[nb_cycle]
+    except ValueError: raise ValueError('Not a valid nb_cycle.')
+    except: pass
+        
+    if not nb_cycle:
+        #if nb_cycle==0:
+        #    raise ValueError("Not a valid nb_cycle.")
+        #else:
+        nb_cycle=electrodf['cycle number'].unique()
+    #elif 0 in nb_cycle:
+     #   raise ValueError("A cycle number must be higher than 0.")
+
     electrodf['dQdV']=electrodf['Capacity/mA.h'].diff()/electrodf['Ewe/V'].diff()
     # apply filters/smoothing
     electrodf=electrodf.iloc[::reduce_by]
     electrodf['dQdV']=electrodf['dQdV'].rolling(boxcar).mean()
-    
-    cyclesIdx=electrodf.groupby(['half cycle'])['half cycle'].size().cumsum().tolist()
-    cyclesIdx.insert(0,0)
-    cycleNumber=np.arange(0,np.ceil(len(cyclesIdx)/2),1)
-    n_charge=len(cyclesIdx[1::2])
+    electrodf['dQdV']=savgol_filter(electrodf['dQdV'],savgol[0],savgol[1])
+
     cm=plt.get_cmap(colormap)
-    color_dqdv=cm(np.linspace(0, 1, n_charge))
+    color_dqdv=cm(np.linspace(0, 1, total_cycles-min_cycles+1))
     
     fig, ax = plt.subplots(figsize=(length,height))
-    if nb_cycle:
-        if nb_cycle>n_charge:
-            raise ValueError("nb_cycle higher than cycles performed.")
-        elif nb_cycle<1:
-            raise ValueError("Not a valid nb_cycle.")
-        for i, c in zip(range(int(n_charge)), color_dqdv):
-            if i==nb_cycle-1:
-                subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
-                ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
-                if i*2+1<len(cyclesIdx)-1:
-                    subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
-                    ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
-    else:
-        if nb_cycle==0:
-            raise ValueError("Not a valid nb_cycle.")
-        for i, c in zip(range(int(n_charge)), color_dqdv):
-            #subdf=electrodf.iloc[cyclesIdx[i*2]:cyclesIdx[i*2+1]-1]
-            subdf=electrodf[electrodf['half cycle']==i*2]
-            ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
-            if i*2+1<=electrodf['half cycle'].max():
-                subdf=electrodf.iloc[cyclesIdx[i*2+1]:cyclesIdx[i*2+2]-1]
-                ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=c)
+    #coloridx=0
+    for cycle in electrodf['cycle number'].unique():
+        if cycle in nb_cycle:
+            subdf=electrodf[electrodf['cycle number']==cycle]
+            ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=2,color=color_dqdv[int(cycle-min_cycles)],label='cycle '+str(int(cycle)))
+
     # y limits
     ylim=(abs(electrodf['dQdV'].quantile(0.95))+abs(electrodf['dQdV'].quantile(0.05)))/2
-    ax.set_ylabel("dQ/dV")
-    ax.set_xlabel("Potential V vs. Li/Li+")
+    ax.set_ylabel("dQ/dV",fontsize=14)
+    ax.set_xlabel("Potential V vs. Li/Li$^+$",fontsize=14)
+    ax.tick_params(axis='both', labelsize=12)
     #ax.set_xlim(3.,4.3)
     ax.set_ylim(-ylim,ylim)
     
-    norm = Normalize(vmin=int(np.ceil(min(cycleNumber)/2)), vmax=int(np.ceil(max(cycleNumber)/2)))
+    norm = Normalize(vmin=min_cycles, vmax=total_cycles)
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
-    cbar = fig.colorbar(cm)
-    cbar.set_label('Cycle', rotation=270, labelpad=10)
+    if len(nb_cycle)>5:
+        cbar = fig.colorbar(sm)
+        cbar.set_label('Cycle', rotation=270, labelpad=10)
+    else:
+        leg = ax.legend(loc='best',prop={'size': 12})
+        #change the marker size
+        #for legendHandles in leg.legendHandles:
+        #    legendHandles._legmarker.set_markersize(6)
     return
