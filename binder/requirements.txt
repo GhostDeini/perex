@@ -3,4 +3,3 @@ numpy
 pathlib
 scipy
 matplotlib
-mpl_toolkits
