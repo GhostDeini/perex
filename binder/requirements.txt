@@ -1,7 +1,6 @@
 pandas
 numpy
 pathlib
-glob
 scipy
 pylab
 matplotlib
