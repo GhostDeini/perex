@@ -1,11 +1,7 @@
 pandas
 numpy
-re
-os
 pathlib
 glob
-datetime
-time
 scipy
 pylab
 matplotlib
