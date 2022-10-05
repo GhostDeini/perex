@@ -2,4 +2,4 @@ pandas
 numpy
 pathlib
 scipy
-matplotlib
+matplotlib=3.5.3
