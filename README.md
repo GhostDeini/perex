@@ -5,3 +5,6 @@ As part of the European project BIG-MAP (Battery Interface Genome Materials Acce
 Here we present an example of an operando XAS experiment coupled with electrochemical characterization performed at ROCK beamline in Synchrotron SOLEIL.
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/GhostDeini/perex/HEAD?labpath=example%2Fecxas_rock_example.ipynb)
+
+
+This project has received support from the European Union’s Horizon 2020 research and innovation programme under grant agreement No 957189.
