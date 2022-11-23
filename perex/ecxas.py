@@ -1,8 +1,9 @@
-# basic data treatment libraries
 import numpy as np, pandas as pd, re, os, pathlib, glob
 from datetime import datetime, timedelta
 from time import mktime
 import h5py
+import itertools
+from decimal import Decimal
 
 # scipy signal treatment
 from scipy.signal import savgol_filter
@@ -45,9 +46,6 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
     # check which delimiter is used for decimals
     delim=checkDelim(rawEC)
     # get number of header lines
-    #for i,line in enumerate(linesEC):
-    #    if 'mode' in line:
-    #        mainHeaderIdx=i
     mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
     rawHeader = "".join(linesEC[:mainHeaderIdx])
     # MAIN DF
@@ -56,9 +54,21 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
     # get acquisition date
     keywordDate='Acquisition started on :'
     if keywordDate in rawEC:
-        acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(), "%m/%d/%Y %H:%M:%S.%f")
+        try:
+            acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(),
+                                     "%m/%d/%Y %H:%M:%S.%f")
+        except:
+            acDate=datetime.strptime(next(line for line in linesEC if keywordDate in line).strip(keywordDate).strip(),
+                                     "%m/%d/%Y %H:%M:%S")
     elif acTime!=1:
-        acDate=datetime.strptime(acTime, "%m/%d/%Y %H:%M:%S.%f")
+        try:
+            acDate=datetime.strptime(acTime, "%m/%d/%Y %H:%M:%S.%f")
+        except:
+            acDate=datetime.strptime(acTime, "%m/%d/%Y %H:%M:%S")
+    if df['time/s'].dtype=='object':
+        df['time/s']=pd.to_datetime(df['time/s'])
+        df['time/s']=df['time/s']-df['time/s'][0]
+        df['time/s']=df['time/s'].dt.total_seconds()
     try:
         # add new datetime column with format YYYY-MM-DD HH:mm:ss.f
         df['datetime']=acDate+pd.TimedeltaIndex(df['time/s'], unit='S')
@@ -66,6 +76,7 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
         # df['datetime']=df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
     except NameError:
         print("There is no information on the start date of the EC acquisition for file "+EC_filename+".")
+
     # dataframe attributes from header lines
     headerDict={}
     attrs = {}
@@ -105,6 +116,7 @@ def getECdf(*args, with_settings=0, acTime=1):
     :acTime: Usually, the EC Lab file has a line indicating when the acquisition started. If not, you can set it as a string with the format m/d/Y H:M:S.f
     :return: Returns a pandas dataframe with the data from EC Lab file(s).
     '''
+    # get an additional dataframe with the settings or not
     if with_settings==0:
         base_df=getECdf_single(args[0],with_settings,acTime)
     else:
@@ -119,7 +131,7 @@ def getECdf(*args, with_settings=0, acTime=1):
     base_df.attrs={'File 1':base_df.attrs}
     # append data from the other EC lab files
     for i,file in enumerate(args[1:]):
-        print("IM HERE")
+        #print("IM HERE")
         if with_settings==0:
             next_df=getECdf_single(file)
         else:
@@ -128,7 +140,7 @@ def getECdf(*args, with_settings=0, acTime=1):
             # consecutive number of sequence
             next_settings_df['Ns']=next_settings_df['Ns']+main_settings_df['Ns'].iloc[-1]+1
             main_settings_df=pd.concat([main_settings_df,next_settings_df],ignore_index=True)
-        # add a column with the EC filenam
+        # add a column with the EC filename
         next_df['filename']=os.path.basename(file)
         cols = list(next_df.columns)
         cols = [cols[-1]] + cols[:-1]
@@ -151,11 +163,9 @@ def getECdf(*args, with_settings=0, acTime=1):
             if first_oxred==1:
                 next_df.loc[next_df[next_df['half cycle']==next_df['half cycle'].min()].index,'Q charge/mA.h']+=base_df['Q charge/mA.h'].iloc[-1]
                 next_df.loc[next_df[next_df['cycle number']==next_df['cycle number'].min()].index,'Energy charge/W.h']+=base_df['Energy charge/W.h'].iloc[-1]
-                #next_df.loc[next_df[next_df['cycle number']==next_df['cycle number'].min()].index,'Capacitance charge/µF']+=base_df['Capacitance charge/µF'].iloc[-1]
             elif first_oxred==0:
                 next_df.loc[next_df[next_df['half cycle']==next_df['half cycle'].min()].index,'Q discharge/mA.h']+=base_df['Q discharge/mA.h'].iloc[-1]
                 next_df.loc[next_df[next_df['cycle number']==next_df['cycle number'].min()].index,'Energy discharge/W.h']+=base_df['Energy discharge/W.h'].iloc[-1]
-                #next_df.loc[next_df[next_df['cycle number']==next_df['cycle number'].min()].index,'Capacitance discharge/µF']+=base_df['Capacitance discharge/µF'].iloc[-1]
         else:
             next_df['half cycle']=next_df['half cycle']-next_df['half cycle'].min()+base_df['half cycle'].iloc[-1]+1
             next_df['cycle number']=next_df['cycle number']-next_df['cycle number'].min()+base_df['cycle number'].iloc[-1]+1
@@ -165,7 +175,6 @@ def getECdf(*args, with_settings=0, acTime=1):
         deltaX=next_df['x'][0]-base_df['x'].iloc[-1]
         next_df['x']+=-deltaX
         next_df.attrs={'File '+str(i+2):next_df.attrs}
-        # next_df['time/s']=base_df['time/s'].iloc[-1]+(datetime.strptime(next_df['datetime'], '%Y-%m-%d %H:%M:%S.%f')-datetime.strptime(base_df['datetime'].iloc[-1], '%Y-%m-%d %H:%M:%S.%f')).total_seconds()
         newAttrs = base_df.attrs | next_df.attrs
         base_df=pd.concat([base_df, next_df], ignore_index=True)
         base_df.attrs=newAttrs
@@ -178,7 +187,6 @@ def getECdf(*args, with_settings=0, acTime=1):
 def ECsettingsdf(setLines,delim):
     '''
     Function to get a pandas dataframe of the EC Lab file settings written in the header (actually a sub-function used inside getECdf).
-    
     :setLines: Header lines containing the settings data.
     :delim: Type of delimiter used (, or .).
     :return: Returns a pandas dataframe with the settings data.
@@ -299,6 +307,7 @@ def getXASfilesdf(XAS_folder,filters=[],recursive=True):
     else:
         path = XAS_folder+'/*.txt'
         files = glob.glob(path)
+        files = [f for f in files if all(word in f for word in filters)]
     if len(files)==0:
         raise ValueError("XAS folder empty. Choose another folder.")
     else:
@@ -325,7 +334,7 @@ def getXASfilesdf(XAS_folder,filters=[],recursive=True):
     print('XAS dataframe ready.')
     return XAS_df
 
-def getXASfilesdf_samba_txt(XAS_folder,filters=[],recursive=True):
+def getXASfilesdf_samba_txt(XAS_folder,filters=[],recursive=False):
     '''
     Function to get a pandas dataframe of the XAS files in a folder.
     
@@ -347,6 +356,7 @@ def getXASfilesdf_samba_txt(XAS_folder,filters=[],recursive=True):
     else:
         path = XAS_folder+'/*.txt'
         files = glob.glob(path)
+        files = [f for f in files if all(word in f for word in filters)]
     if len(files)==0:
         raise ValueError("XAS folder empty. Choose another folder.")
     else:
@@ -363,10 +373,14 @@ def getXASfilesdf_samba_txt(XAS_folder,filters=[],recursive=True):
         a=(XAS_df.applymap(type) == list).all()
         for col in a.index[a]:
             XAS_df[col]=XAS_df[col].apply(lambda x: np.array(x))
+        for col in XAS_df.columns:
+            if (XAS_df[col].map(type) == np.ndarray).all() or (XAS_df[col].map(type) == list).all():
+                if XAS_df[col].map(lambda x: x.size==0).all():
+                    XAS_df.drop(columns=col,inplace=True)
     print('XAS dataframe ready.')
     return XAS_df
 
-def getXASfilesdf_samba_hdf(XAS_folder,filters=[],recursive=True):
+def getXASfilesdf_samba_hdf(XAS_folder,filters=[],recursive=False):
     '''
     Function to get a pandas dataframe of the XAS files in a folder.
     
@@ -388,6 +402,7 @@ def getXASfilesdf_samba_hdf(XAS_folder,filters=[],recursive=True):
     else:
         path = XAS_folder+'/*.hdf'
         files = glob.glob(path)
+        files = [f for f in files if all(word in f for word in filters)]
     if len(files)==0:
         raise ValueError("XAS folder empty. Choose another folder.")
     else:
@@ -413,7 +428,28 @@ def mergeXASdfs_samba(hdf_df,txt_df):
         merged_df[col]=merged_df[col].apply(lambda x: np.array(x))
     return merged_df
 
-def getXASdf_samba(hdf_path,txt_path):
+def getXASdf_samba(path1,path2=None,filters1=[],filters2=[]):
+    if path2==None:
+        try:
+            merged_df=getXASfilesdf_samba_hdf(path1,filters1)
+        except:
+            merged_df=getXASfilesdf_samba_txt(path1,filters1)
+    else:
+        try:
+            hdf_df=getXASfilesdf_samba_hdf(path1,filters1)
+            txt_df=getXASfilesdf_samba_txt(path2,filters2)
+        except:
+            hdf_df=getXASfilesdf_samba_hdf(path2,filters2)
+            txt_df=getXASfilesdf_samba_txt(path1,filters1)
+        r = '({})'.format('|'.join(hdf_df['filename']))
+        first_merge = txt_df['filename'].str.extract(r, expand=False).fillna(txt_df['filename'])
+        #merged_df = hdf_df.merge(txt_df.drop('filename', 1), left_on='filename', right_on=first_merge, how='outer')
+        merged_df = txt_df.merge(hdf_df.rename(columns={"filename":'filename hdf'}), left_on=first_merge,
+                                 right_on='filename hdf', how='outer').drop(columns=['filename hdf'])
+        merged_df=merged_df.sort_values(by='average time', ignore_index=True)
+    return merged_df
+
+def getXASdf_samba_beta(hdf_path,txt_path):
     hdf_df=getXASfilesdf_samba_hdf(hdf_path)
     txt_df=getXASfilesdf_samba_txt(txt_path)
     r = '({})'.format('|'.join(hdf_df['filename']))
@@ -447,7 +483,10 @@ def getSingleXASdict_simplified(filename):
     # check delimiter
     delim=checkDelim(rawXAS)
     # get variables from header
-    startTime=datetime.strptime(next(line for line in linesXAS if '#Time at start=' in line).strip('#Time at start=').strip(), "%Y-%m-%d %H:%M:%S.%f")
+    try:
+        startTime=datetime.strptime(next(line for line in linesXAS if '#Time at start=' in line).strip('#Time at start=').strip(), "%Y-%m-%d %H:%M:%S.%f")
+    except:
+        startTime=datetime.strptime(next(line for line in linesXAS if '#Time at start=' in line).strip('#Time at start=').strip(), "%Y-%b-%d %H:%M:%S.%f")
     elapsedTime=float(next(line for line in linesXAS if '#Time from start (seconds)=' in line).strip('#Time from start (seconds)=').strip())
     sampleT=float(next(line for line in linesXAS if '#Sample temperature (C)=' in line).strip('#Sample temperature (C)=').strip())
     varNames=['filename','start time','elapsed time/s','sample T (C)']
@@ -472,11 +511,19 @@ def getSingleXASdict(filename):
     # check delimiter
     delim=checkDelim(rawXAS)
     # get variables from header
-    startTime=datetime.strptime(next(line for line in linesXAS if '#Time at start=' in line).strip('#Time at start=').strip(), "%Y-%m-%d %H:%M:%S.%f")
+    try:
+        startTime=datetime.strptime(next(line for line in linesXAS if '#Time at start=' in line).strip('#Time at start=').strip(), "%Y-%m-%d %H:%M:%S.%f")
+    except:
+        startTime=datetime.strptime(next(line for line in linesXAS if '#Time at start=' in line).strip('#Time at start=').strip(), "%Y-%b-%d %H:%M:%S.%f")
     elapsedTime=float(next(line for line in linesXAS if '#Time from start (seconds)=' in line).strip('#Time from start (seconds)=').strip())
-    sampleT=float(next(line for line in linesXAS if '#Sample temperature (C)=' in line).strip('#Sample temperature (C)=').strip())
-    varNames=['filename','start time','elapsed time/s','sample T (C)']
-    varVals=[os.path.basename(filename),startTime,elapsedTime,sampleT]
+    varNames=['filename','start time','elapsed time/s']
+    varVals=[os.path.basename(filename),startTime,elapsedTime]
+    try:
+        sampleT=float(next(line for line in linesXAS if '#Sample temperature (C)=' in line).strip('#Sample temperature (C)=').strip())
+        varNames.append('sample T (C)')
+        varVals.append(sampleT)
+    except:
+        pass
     # get additional vars if normalised file
     if norm:
         # get number of header lines
@@ -495,17 +542,6 @@ def getSingleXASdict(filename):
         df=df.iloc[:, 0].str.strip().str.split(expand=True)
         df.columns=new_columns
         df=df.astype(float)
-        # adding edge values
-        #E_fine = np.linspace(df['shifted energy'].min(),df['shifted energy'].max(), 100000)
-        #interpol = interp1d(df['shifted energy'], df['normalized'])
-        #mu_norm_int=interpol(E_fine)
-        #deriv=pd.Series(mu_norm_int).diff()/pd.Series(E_fine).diff()
-        #edge_0p5=pd.Series(E_fine)[pd.Series(mu_norm_int).sub(0.5).abs().idxmin()]
-        #edge_0p7=pd.Series(E_fine)[pd.Series(mu_norm_int).sub(0.7).abs().idxmin()]
-        #edge_max_inflection=pd.Series(E_fine)[pd.Series(deriv).idxmax()]
-        #varNames=varNames+['edge_0.5','edge_0.7','edge_max_inflection']
-        #varVals=varVals+[edge_0p5,edge_0p7,edge_max_inflection]
-        #df=df.drop(columns='dI/dE')
     else:
         headerIdx=next(i for i,line in enumerate(linesXAS) if '#Energy' in line)
         df=pd.read_csv(filename, header=headerIdx, sep="\t", skip_blank_lines=False, decimal=delim)
@@ -513,15 +549,6 @@ def getSingleXASdict(filename):
         if df['Time'].isna().sum()==df.shape[0]:
             df=df.drop(columns='Time')
             df.rename(columns={"iFluo1": "Time"},inplace=True)
-        # adding edge values
-        #E_fine = np.linspace(df['Energy'].min(),df['Energy'].max(), 100000)
-        #interpol = interp1d(df['Energy'], df['mux'])
-        #mux_int=interpol(E_fine)
-        #deriv=pd.Series(mux_int).diff()/pd.Series(E_fine).diff()
-        #edge_max_inflection=pd.Series(E_fine)[deriv.idxmax()]
-        #varNames=varNames+['edge_max_inflection']
-        #varVals=varVals+[edge_max_inflection]
-        #df=df.drop(columns='dmux/dE')
     df=df.astype(float)
     # get number of header lines
     spectrumDataDict = df.to_dict('list')
@@ -543,17 +570,22 @@ def getSingleXASdict_samba(filename):
     # check delimiter
     delim=checkDelim(rawXAS)
     #
-    varNames=['filename']
+    varNames=['filename', 'header']
     varVals=[os.path.splitext(os.path.basename(filename))[0]]
     # get additional vars - not normalised file
     try:
         headerIdx=next(i for i,line in enumerate(linesXAS) if '# Energy' in line)
+        varVals.append(linesXAS[0:headerIdx])
         cols=linesXAS[headerIdx].split(',')
     except:
         headerIdx=next(i for i,line in enumerate(linesXAS) if '# energy' in line)
+        varVals.append(linesXAS[0:headerIdx])
         cols=linesXAS[headerIdx].split(';')
+    if len(cols)==1:
+        cols=linesXAS[headerIdx].split('\t')
     cols_stripped=[s.strip() for s in cols]
-    df=pd.read_csv(filename, header=headerIdx, index_col=False, names=cols_stripped, sep=" ", skip_blank_lines=False, decimal=delim)
+    #df=pd.read_csv(filename, header=headerIdx, index_col=False, names=cols_stripped, sep=" ", skip_blank_lines=False, decimal=delim)
+    df=pd.read_csv(filename, header=headerIdx, index_col=False, names=cols_stripped, delim_whitespace=True, skip_blank_lines=False, decimal=delim)
     df.rename(columns={'# Energy':'Energy','# energy(eV)':'energy(eV)'},inplace=True)
     df=df.astype(float)
     # get number of header lines
@@ -665,6 +697,13 @@ def simplified_output(merged_df,cols,output_name,extension):
     #merged_df.to_csv(output_name+extension, index=False, sep='\t')
     print(output_name+extension)
     merged_df[cols].to_csv(output_name+extension, index=False, sep='\t', mode='w+')
+    print('Output file succesfully created!')
+    return
+
+def segmented_output(merged_df,cols,output_name,extension):
+    #merged_df.to_csv(output_name+extension, index=False, sep='\t')
+    print(output_name+extension)
+    merged_df[cols].to_csv(output_name+extension, index=False, sep='\t', mode='w+')
     for half_cycle in merged_df['half cycle'].unique():
         sub_df=merged_df[merged_df['half cycle']==half_cycle]
         cycle=sub_df['cycle number'].mode()[0]
@@ -687,8 +726,113 @@ def simplified_output_beta(EC_filename,XAS_folder,output_name,EC_starttime=1):
     merged.to_csv(output_name, index=False, sep='\t')
     print('Output file succesfully created!')
     return
+#  ------------------------------------------------------- pre-treatment -------------------------------------------------------
+def interpol_energy(XAS_path,grid=None,output_prefix='int',extension='.txt'):
+    XAS_df=getXASdf_samba(XAS_path)
+    energy_col=get_energy_col(XAS_df)
+    try:
+        chunks = [grid[x:x+3] for x in range(0, len(grid)-1, 2)]
+        decimals = max([abs(Decimal(str(x)).as_tuple().exponent) for x in grid])
+        for chunk in chunks:
+            if chunk[2]<=chunk[0] or Decimal(str((chunk[2]-chunk[0])))%Decimal(str(chunk[1]))!=0:
+                raise ValueError('Please specify a valid energy grid.')
+    except:
+        raise ValueError('Please specify a valid energy grid.')
+    output_dir=os.path.join(XAS_path, 'interpolated')
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    # get all columns to interpolate (except energy)
+    a=(XAS_df.applymap(type) == np.ndarray).all()
+    cols_to_int=a.index[a].to_list()
+    cols_to_int.remove(energy_col)
+    if 'header' in cols_to_int:
+        cols_to_int.remove('header')
+    # define energy scale
+    E_fine=[]
+    for chunk in chunks:
+        E_fine.extend(np.arange(chunk[0],chunk[2],chunk[1]))
+    for index, row in XAS_df.iterrows():
+        for col in cols_to_int:
+            interpol = interp1d(row[energy_col], row[col], fill_value='extrapolate')
+            int_values=interpol(E_fine)
+            #XAS_df.loc[index, col] = int_values
+            row[col] = int_values
+        #XAS_df.loc[index, energy_col] = np.around(E_fine,decimals)
+        row[energy_col] = np.around(E_fine,decimals)
+        
+        output = os.path.join(output_dir, output_prefix+'_'+row['filename']+extension)
+        # get np matrix
+        matrix=[]
+        cols=[]
+        cols_not=[]
+        for col, data in row.iteritems():
+            if type(data)==np.ndarray and col!='header':
+                matrix.append(data)
+                cols.append(col)
+            else:
+                cols_not.append(col)
+        matrix=np.transpose(np.array(matrix))
+        np.savetxt(output, matrix, delimiter='\t', header='\t'.join(col for col in cols))
+        header=[]
+        header.append('# File generated with ECXAS python library.\n')
+        header.append('# New interpolation grid: '+str(grid)+'\n\n')
+        int_file = open(output, "r")
+        original_text = int_file.read()
+        int_file.close()
+        with open(output, 'w') as int_file:
+            if 'header' in XAS_df.columns:
+                header.extend(list(row['header']))
+            int_file.writelines(header)
+            int_file.write(original_text)
+    print('Interpolated files ready.')
+    return
+
 
 # ---------------------------------------------------------- plotting ----------------------------------------------------------
+def check_cycles(df):
+    if 'cycle number' not in df.columns:
+        change_idx=df[np.sign(df['Ewe/V'].diff(2)).diff().ne(0)].index.to_list()
+        change_idx=np.array(change_idx)
+        rows_mask=np.diff(change_idx)!=1
+        rows_mask=np.append(True,rows_mask)
+        change_idx=change_idx[rows_mask]
+        if change_idx[-1]!=df.index[-1]:
+            change_idx=np.append(change_idx,df.index[-1])
+        half_cycle=[]
+        cycle_number=[]
+        start=0
+        i=0
+        last_oxred=df.iloc[start:change_idx[1]]['ox/red'].mode()[0]
+        for idx in change_idx[1:]:
+            if df.iloc[start:idx]['ox/red'].mode()[0]!=last_oxred:
+                i+=1
+            half_cycle.extend((i)*np.ones(idx-start))
+            cycle_number.extend(((i+2)//2)*np.ones(idx-start))
+            if idx==change_idx[-1]:
+                half_cycle.append(i)
+                cycle_number.append((i+2)//2)
+            last_oxred=df.iloc[start:idx]['ox/red'].mode()[0]
+            start=idx
+        df['cycle number']=cycle_number
+    if 'half cycle' not in df.columns:
+        df['half cycle']=half_cycle
+    return
+
+def convert_nb_cycle(df,nb_cycle):
+    try:
+        nb_cycle=int(nb_cycle)
+        if nb_cycle not in df['cycle number'].unique():
+            raise ValueError("Not a valid nb_cycle.")
+        else:
+            nb_cycle=[nb_cycle]
+    except ValueError: raise ValueError('Not a valid nb_cycle.')
+    except: pass
+        
+    if not nb_cycle:
+        nb_cycle=df['cycle number'].unique()
+    elif not all(elem in df['cycle number'].unique() for elem in nb_cycle):
+        raise ValueError('The chosen cycle numbers are not in the sequence.')
+    return nb_cycle
 
 ########## EC data alone ##########
 def plotUI_vs_time(electrodf,width=15,height=5):
@@ -743,39 +887,39 @@ def plotCapacity_vs_U(electrodf,nb_cycle=None,width=8,height=5,mass=1000):
     :return: Plot.
     '''
     mass=mass/1000 # mg to g
-    total_cycles=len(electrodf['cycle number'].unique())
+    newECdf=electrodf.copy(deep=True)
+    check_cycles(newECdf)
+    total_cycles=len(newECdf['cycle number'].unique())
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
     
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in electrodf['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
+    if 'Capacity/mA.h' not in newECdf.columns:
+        try:
+            capa=[]
+            for half_cycle in newECdf['half cycle'].unique():
+                condition=newECdf['half cycle']==half_cycle
+                capa.extend(newECdf['dq/mA.h'][condition].abs().cumsum())
+            capa=np.array(capa)
+            newECdf['Capacity/mA.h']=capa
+        except:
+            raise ValueError("Column for 'Capacity/mA.h' or 'dq/mA.h' not found.")
         
-    if not nb_cycle:
-        nb_cycle=electrodf['cycle number'].unique()
-    elif not all(elem in electrodf['cycle number'].unique() for elem in nb_cycle):
-        raise ValueError('The chosen cycle numbers are not in the sequence.')
-
-    color_charge = cm.seismic(np.linspace(0, 0.5, total_cycles+2))[1:-1]
-    color_discharge = cm.seismic(np.linspace(1, 0.5, total_cycles+2))[1:-1]
+    color_discharge = cm.seismic(np.linspace(0, 0.5, total_cycles+2))[1:-1]
+    color_charge = cm.seismic(np.linspace(1, 0.5, total_cycles+2))[1:-1]
     # build figure
     fig, ax = plt.subplots(figsize=(width,height))
-    for half_cycle in electrodf['half cycle'].unique():
-        subdf=electrodf[electrodf['half cycle']==half_cycle]
+    for half_cycle in newECdf['half cycle'].unique():
+        subdf=newECdf[newECdf['half cycle']==half_cycle]
         cycle_number=int(subdf['cycle number'].mean())
         if cycle_number in nb_cycle:
             #if (half_cycle % 2) == 0:
             if subdf['ox/red'].mode()[0]==1:
                 #ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_charge[int(np.floor(i/2))])
-                ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_charge[int(np.where(electrodf['cycle number'].unique()==cycle_number)[0])])
-                ax.annotate(str(int(cycle_number)), (subdf['Capacity/mA.h'].iloc[-1]/mass, subdf['Ewe/V'].iloc[-1]+0.01), color=color_charge[int(np.where(electrodf['cycle number'].unique()==cycle_number)[0])], va='bottom')
+                ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_charge[int(np.where(newECdf['cycle number'].unique()==cycle_number)[0])])
+                ax.annotate(str(int(cycle_number)), (subdf['Capacity/mA.h'].iloc[-1]/mass, subdf['Ewe/V'].iloc[-1]+0.01), color=color_charge[int(np.where(newECdf['cycle number'].unique()==cycle_number)[0])], va='bottom')
             else:
                 #ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_discharge[int(np.floor(i/2))])
-                ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_discharge[int(np.where(electrodf['cycle number'].unique()==cycle_number)[0])])
-                ax.annotate(str(int(cycle_number)), (subdf['Capacity/mA.h'].iloc[-1]/mass, subdf['Ewe/V'].iloc[-1]-0.01), color=color_discharge[int(np.where(electrodf['cycle number'].unique()==cycle_number)[0])], va='top')
+                ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_discharge[int(np.where(newECdf['cycle number'].unique()==cycle_number)[0])])
+                ax.annotate(str(int(cycle_number)), (subdf['Capacity/mA.h'].iloc[-1]/mass, subdf['Ewe/V'].iloc[-1]-0.01), color=color_discharge[int(np.where(newECdf['cycle number'].unique()==cycle_number)[0])], va='top')
     
     # set axes labels and limits
     ax.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14)
@@ -784,10 +928,10 @@ def plotCapacity_vs_U(electrodf,nb_cycle=None,width=8,height=5,mass=1000):
     else:
         ax.set_xlabel("Capacity (mAh$\cdot$g$^{-1}$)",fontsize=14)
     margin=0.05
-    xmin=electrodf['Capacity/mA.h'].min()-(electrodf['Capacity/mA.h'].max()-electrodf['Capacity/mA.h'].min())*margin/(1-margin*2)
-    xmax=electrodf['Capacity/mA.h'].max()+(electrodf['Capacity/mA.h'].max()-electrodf['Capacity/mA.h'].min())*margin/(1-margin*2)
-    ymin=electrodf['Ewe/V'].min()-(electrodf['Ewe/V'].max()-electrodf['Ewe/V'].min())*margin/(1-margin*2)
-    ymax=electrodf['Ewe/V'].max()+(electrodf['Ewe/V'].max()-electrodf['Ewe/V'].min())*margin/(1-margin*2)
+    xmin=newECdf['Capacity/mA.h'].min()-(newECdf['Capacity/mA.h'].max()-newECdf['Capacity/mA.h'].min())*margin/(1-margin*2)
+    xmax=newECdf['Capacity/mA.h'].max()+(newECdf['Capacity/mA.h'].max()-newECdf['Capacity/mA.h'].min())*margin/(1-margin*2)
+    ymin=newECdf['Ewe/V'].min()-(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
+    ymax=newECdf['Ewe/V'].max()+(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
     ax.set_xlim(xmin/mass,xmax/mass)
     ax.set_ylim(ymin,ymax)
     ax.tick_params(axis='both', labelsize=13, direction='in')
@@ -812,23 +956,17 @@ def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colo
     '''
     mass=mass/1000 # mg to g
     newECdf=electrodf.copy(deep=True)
-    total_cycles=len(electrodf['cycle number'].unique())
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in electrodf['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=electrodf['cycle number'].unique()
-    elif not all(elem in electrodf['cycle number'].unique() for elem in nb_cycle):
-        raise ValueError('The chosen cycle numbers are not in the sequence.')
+    check_cycles(newECdf)
+    total_cycles=len(newECdf['cycle number'].unique())
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
-    newECdf['dQdV']=(newECdf['Capacity/mA.h']/mass).diff()/newECdf['Ewe/V'].diff()
+    if 'Capacity/mA.h' not in newECdf.columns:
+        try:
+            newECdf['dQdV']=(newECdf['dq/mA.h'].abs()/mass)/newECdf['Ewe/V'].diff()
+        except:
+            raise ValueError("Column for 'Capacity/mA.h' or 'dq/mA.h' not found.")
+    else:
+        newECdf['dQdV']=(newECdf['Capacity/mA.h'].diff()/mass)/newECdf['Ewe/V'].diff()
     # apply filters/smoothing
     newECdf=newECdf.iloc[::reduce_by]
     newECdf['dQdV']=newECdf['dQdV'].rolling(boxcar).mean()
@@ -836,7 +974,7 @@ def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colo
 
     cm=plt.get_cmap(colormap)
     # color map from the total number of cycles in the DF, not from the length of the input nb_cycles
-    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
+    color_dqdv=cm(np.linspace(0, 1, total_cycles))
     
     # build figure
     fig, ax = plt.subplots(figsize=(width,height))
@@ -850,8 +988,8 @@ def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colo
     ax.tick_params(axis='both', labelsize=13, direction='in')
     # x
     margin=0.05
-    xmin=electrodf['Ewe/V'].min()-(electrodf['Ewe/V'].max()-electrodf['Ewe/V'].min())*margin/(1-margin*2)
-    xmax=electrodf['Ewe/V'].max()+(electrodf['Ewe/V'].max()-electrodf['Ewe/V'].min())*margin/(1-margin*2)
+    xmin=newECdf['Ewe/V'].min()-(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
+    xmax=newECdf['Ewe/V'].max()+(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
     ax.set_xlim(xmin,xmax)
     ax.set_xlabel("Potential vs. Li/Li$^+$ (V)",fontsize=14)
     # y
@@ -863,7 +1001,7 @@ def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colo
         ax.set_ylabel("dQ/dV (mAh$\cdot$g$^{-1}\cdot$V$^{-1}$)",fontsize=14)
 
     # put colorbar legend
-    norm = Normalize(vmin=int(electrodf['cycle number'].min()), vmax=int(electrodf['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
     if len(nb_cycle)>5:
         cbar = fig.colorbar(sm)
@@ -871,7 +1009,6 @@ def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colo
     else:
         leg = ax.legend(loc='upper left',prop={'size': 14},markerscale=2)
     return fig
-
 
 ########## EC data + XAS data ##########
 
@@ -899,6 +1036,8 @@ def get_edge(df,intensity_val='inflection',intensity_col='normalized'):
     indexes=[]
     edge_energy=[]
     energy_col=get_energy_col(df)
+    if intensity_col not in df.columns:
+        intensity_col='mux'
     for index, row in df.iterrows():
         E_fine = np.linspace(min(row[energy_col]),max(row[energy_col]), 100000)
         interpol = interp1d(row[energy_col], row[intensity_col])
@@ -915,8 +1054,84 @@ def get_edge(df,intensity_val='inflection',intensity_col='normalized'):
         edge_df=pd.Series(data=edge_energy,index=indexes)
     return edge_df
 
+def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',width=10,height=6,
+                    guideline=False):
+    '''
+    Function to plot edge shift vs potential graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :intensity_col: Name of the column with the normalized intensity values.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    fillstyle=['full','none']
+    markers = itertools.cycle(('o','o','v','v','X','X','*','*')) 
+    colors = ['r','b']
 
-def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
+
+    fig, ax = plt.subplots(figsize=(width,height))
+    # plot Edge shift
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    counter=1
+    if guideline:
+        ax.plot(newECdf[condition]['Ewe/V'],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+    for i, cycle in enumerate(newECdf['cycle number'].unique()):
+        if cycle in nb_cycle:
+            subdf=newECdf[newECdf['cycle number']==cycle]
+            marker=next(markers)
+            for j, subcycle in enumerate(subdf['half cycle'].unique()):
+                if subdf[subdf['half cycle']==subcycle]['ox/red'].mode()[0]==1:
+                    subcycle_type='charge'
+                    color=colors[0]
+                else:
+                    subcycle_type='discharge'
+                    color=colors[1]
+                if guideline:
+                    ax.plot(subdf[subdf['half cycle']==subcycle]['Ewe/V'],edge[subdf[subdf['half cycle']==subcycle].index],
+                            alpha=0.3,linewidth=1.5,color=color,zorder=counter)
+                    counter+=1
+                ax.plot(subdf[subdf['half cycle']==subcycle]['Ewe/V'],edge[subdf[subdf['half cycle']==subcycle].index],
+                        marker=marker, fillstyle=fillstyle[i%2],color=color,lw=0,
+                        label='cycle '+str(int(cycle))+' '+subcycle_type,zorder=counter)
+                counter+=1
+    # axes labels and limits
+    margin=0.05
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    # x
+    xmin=newECdf['Ewe/V'].min()-(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
+    xmax=newECdf['Ewe/V'].max()+(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
+    ax.set_xlim(xmin,xmax)
+    ax.set_xlabel("Potential vs. Li/Li$^+$ (V)",fontsize=14)
+    # y
+    ymin=edge.min()-(edge.max()-edge.min())*margin/(1-margin*2)
+    ymax=edge.max()+(edge.max()-edge.min())*margin/(1-margin*2)
+    ax.set_ylim(ymin,ymax)
+    label_y='Edge @ J='+str(edge_intensity)+' (eV)'
+    ax.set_ylabel(label_y,fontsize=14)
+
+    ax.minorticks_on()
+    ax.tick_params(which="minor", axis="x", direction="in")
+    ax.tick_params(which="minor", axis="y", color='w', direction="in")
+    
+    # put a legend
+    
+    # Shrink current axis by 20%
+    #box = ax.get_position()
+    #ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+    # Put a legend to the right of the current axis
+    leg = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 12})
+    return fig
+
+def plotEshift_vs_U_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
                     width=10,height=6,dotsize=10,alpha=0.5):
     '''
     Function to plot edge shift vs potential graph.
@@ -932,27 +1147,16 @@ def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
-    elif not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-        raise ValueError('The chosen cycle numbers are not in the sequence.')
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
     #cm=plt.get_cmap(colormap)
     # color map from the total number of cycles in the DF, not from the length of the input nb_cycles
     #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
     
     # normalize the colormap with respect to the total number of cycles in the df
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     # build plot
     fig, ax = plt.subplots(figsize=(width,height))
 
@@ -961,16 +1165,16 @@ def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
             #subdf=merged_df[merged_df['cycle number']==cycle]
             #ax.scatter(subdf['Ewe/V'],subdf[Eshift_col_name],s=dotsize,color=color_dqdv[i],label='cycle '+str(int(cycle)),alpha=alpha)
     
-    condition = merged_df['cycle number'].isin(nb_cycle)
+    condition = newECdf['cycle number'].isin(nb_cycle)
     # plot Edge shift
-    scatter = ax.scatter(merged_df['Ewe/V'][condition],edge[condition],s=dotsize,c=merged_df['cycle number'][condition], cmap=colormap, norm=norm,alpha=alpha)
+    scatter = ax.scatter(newECdf['Ewe/V'][condition],edge[condition],s=dotsize,c=newECdf['cycle number'][condition], cmap=colormap, norm=norm,alpha=alpha)
     
     # axes labels and limits
     margin=0.05
     ax.tick_params(axis='both', labelsize=13, direction='in')
     # x
-    xmin=merged_df['Ewe/V'].min()-(merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min())*margin/(1-margin*2)
-    xmax=merged_df['Ewe/V'].max()+(merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min())*margin/(1-margin*2)
+    xmin=newECdf['Ewe/V'].min()-(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
+    xmax=newECdf['Ewe/V'].max()+(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
     ax.set_xlim(xmin,xmax)
     ax.set_xlabel("Potential vs. Li/Li$^+$ (V)",fontsize=14)
     # y
@@ -994,8 +1198,95 @@ def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
         leg = ax.legend(handles=scatter.legend_elements()[0], labels=['cycle '+str(int(i)) for i in nb_cycle], prop={'size': 12})
     return fig
 
-def plotEshift_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
-                    width=10,height=6,dotsize=10,alpha=0.5):
+def plotEshift_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',width=10,height=6,
+                    guideline=False):
+    '''
+    Function to plot edge shift vs time.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the normalized intensity values.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    fillstyle=['full','none']
+    markers = itertools.cycle(('o','o','v','v','X','X','*','*')) 
+    colors = ['r','b']
+    
+    # build figure
+    fig, ax = plt.subplots(figsize=(width,height))
+    # plot Edge shift
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    counter=1
+    for i, cycle in enumerate(newECdf['cycle number'].unique()):
+        if cycle in nb_cycle:
+            subdf=newECdf[newECdf['cycle number']==cycle]
+            marker=next(markers)
+            for j, subcycle in enumerate(subdf['half cycle'].unique()):
+                if subdf[subdf['half cycle']==subcycle]['ox/red'].mode()[0]==1:
+                    subcycle_type='charge'
+                    color=colors[0]
+                else:
+                    subcycle_type='discharge'
+                    color=colors[1]
+                if guideline:
+                    ax.plot(subdf[subdf['half cycle']==subcycle]['absolute time/h'],edge[subdf[subdf['half cycle']==subcycle].index],
+                            alpha=0.3,linewidth=1.5,color=color,zorder=counter)
+                    counter+=1
+                ax.plot(subdf[subdf['half cycle']==subcycle]['absolute time/h'],edge[subdf[subdf['half cycle']==subcycle].index],
+                        marker=marker, fillstyle=fillstyle[i%2],color=color,lw=0,
+                        label='cycle '+str(int(cycle))+' '+subcycle_type,zorder=counter)
+                counter+=1
+    ax.spines['left'].set_color('red')
+    ax.tick_params(axis='y', colors='b')
+    ax.yaxis.label.set_color('r')
+    
+    # plot potential over time
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    ax1 = ax.twinx()
+    if guideline:
+        ax.plot(newECdf[condition]['absolute time/h'],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+        ax1.plot(newECdf[condition]['absolute time/h'],newECdf['Ewe/V'][condition],
+                 alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+    ax1.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=10, marker="_")
+    # axes parameters
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    ax1.tick_params(axis='both', labelsize=13, direction='in')
+    ax.minorticks_on()
+    ax.tick_params(which="minor", axis="x", direction="in")
+    ax.tick_params(which="minor", axis="y", color='w')
+    # x
+    ax.set_xlabel("Time (h)",fontsize=14,labelpad=10)
+    margin = 0.02
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    #ax.set_xlim(x_min,x_max)
+    ax.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    # y left
+    label_y_right='Edge @ J='+str(edge_intensity)+' (eV)'
+    ax.set_ylabel(label_y_right,fontsize=14,labelpad=10)
+    # y right
+    margin = 0.1
+    ax1.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    ax1.set_ylim(y_right_min,y_right_max)
+    ax1.spines['left'].set_color('red')
+    # Put a legend to the right of the current axis
+    leg = ax.legend(loc='center left', bbox_to_anchor=(1.1, 0.5), prop={'size': 12})
+    return fig
+
+def plotEshift_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
+                         width=10,height=6,dotsize=10,alpha=0.5):
     '''
     Function to plot edge shift vs time.
     
@@ -1009,47 +1300,29 @@ def plotEshift_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
-    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
-
-    #colormap according to total number of cycles
-    #cm=plt.get_cmap(colormap)
-    #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
     
     # normalize the colormap with respect to the total number of cycles in the df
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     cm=plt.get_cmap(colormap)
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
     # build figure
     fig, ax = plt.subplots(figsize=(width,height))
-    condition = merged_df['cycle number'].isin(nb_cycle)
+    condition = newECdf['cycle number'].isin(nb_cycle)
     # plot Edge shift
-    scatter = ax.scatter(merged_df['absolute time/h'][condition], edge[condition], s=dotsize, c=merged_df['cycle number'][condition], cmap=colormap, norm=norm)
+    scatter = ax.scatter(newECdf['absolute time/h'][condition], edge[condition], s=dotsize, c=newECdf['cycle number'][condition], cmap=colormap, norm=norm)
     
-    axis_color=sm.to_rgba(merged_df['cycle number'][condition].min())
+    axis_color=sm.to_rgba(newECdf['cycle number'][condition].min())
     ax.spines['left'].set_color(axis_color)
     ax.tick_params(axis='y', colors=axis_color)
     ax.yaxis.label.set_color(axis_color)
     
     # plot potential over time
     ax1 = ax.twinx()
-    ax1.scatter(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black',s=6, marker="_")
-    #ax1.plot(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black')
-    #for cycle in nb_cycle:
-    #    ax1.plot(merged_df['absolute time/h'][merged_df['cycle number']==cycle],merged_df['Ewe/V'][merged_df['cycle number']==cycle], color='black')
+    ax1.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=6, marker="_")
     # axes parameters
     ax.tick_params(axis='both', labelsize=13, direction='in')
     ax1.tick_params(axis='both', labelsize=13, direction='in')
@@ -1059,20 +1332,20 @@ def plotEshift_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
     # x
     ax.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = merged_df['absolute time/h'].max()-merged_df['absolute time/h'].min()
-    x_min=merged_df['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=merged_df['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
     #ax.set_xlim(x_min,x_max)
-    ax.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
+    ax.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
     # y left
     label_y_right='Edge @ J='+str(edge_intensity)+' (eV)'
     ax.set_ylabel(label_y_right,fontsize=14,labelpad=10)
     # y right
     margin = 0.1
     ax1.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
-    full_range_y_right = merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min()
-    y_right_min=merged_df['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
-    y_right_max=merged_df['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
     ax1.set_ylim(y_right_min,y_right_max)
     #ax1.set_ylim(2.8,5) # check later
     # put a legend
@@ -1101,38 +1374,22 @@ def plotdEshiftdt_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',inten
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
-    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
-
-    #colormap according to total number of cycles
-    #cm=plt.get_cmap(colormap)
-    #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
     
     # normalize the colormap with respect to the total number of cycles in the df
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     cm=plt.get_cmap(colormap)
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
     # build figure
     fig, ax = plt.subplots(figsize=(width,height))
-    condition = merged_df['cycle number'].isin(nb_cycle)
+    condition = newECdf['cycle number'].isin(nb_cycle)
     # plot Edge shift
-    #scatter = ax.scatter(merged_df['absolute time/h'][condition], abs(edge[condition].diff()/merged_df['absolute time/h'][condition].diff()), s=dotsize, c=merged_df['cycle number'][condition], cmap=colormap, norm=norm)
-    scatter = ax.plot(merged_df['absolute time/h'][condition], abs(edge[condition].diff()/merged_df['absolute time/h'][condition].diff()), color='blue')
+    scatter = ax.plot(newECdf['absolute time/h'][condition], abs(edge[condition].diff()/newECdf['absolute time/h'][condition].diff()), color='blue')
     
-    axis_color=sm.to_rgba(merged_df['cycle number'][condition].min())
+    axis_color=sm.to_rgba(newECdf['cycle number'][condition].min())
     ax.spines['left'].set_color(axis_color)
     ax.tick_params(axis='y', colors=axis_color)
     ax.yaxis.label.set_color(axis_color)
@@ -1140,9 +1397,7 @@ def plotdEshiftdt_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',inten
     # plot potential over time
     ax1 = ax.twinx()
     #ax1.scatter(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black',s=2)
-    ax1.plot(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black')
-    #for cycle in nb_cycle:
-    #    ax1.plot(merged_df['absolute time/h'][merged_df['cycle number']==cycle],merged_df['Ewe/V'][merged_df['cycle number']==cycle], color='black')
+    ax1.plot(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black')
     # axes parameters
     ax.tick_params(axis='both', labelsize=13, direction='in')
     ax1.tick_params(axis='both', labelsize=13, direction='in')
@@ -1152,20 +1407,20 @@ def plotdEshiftdt_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',inten
     # x
     ax.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = merged_df['absolute time/h'].max()-merged_df['absolute time/h'].min()
-    x_min=merged_df['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=merged_df['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
     #ax.set_xlim(x_min,x_max)
-    ax.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
+    ax.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
     # y left
     label_y_right='dEdge @ J='+str(edge_intensity)+'/dt'
     ax.set_ylabel(label_y_right,fontsize=14,labelpad=10)
     # y right
     margin = 0.1
     ax1.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
-    full_range_y_right = merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min()
-    y_right_min=merged_df['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
-    y_right_max=merged_df['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
     ax1.set_ylim(y_right_min,y_right_max)
     #ax1.set_ylim(2.8,5) # check later
     # put a legend
@@ -1179,7 +1434,107 @@ def plotdEshiftdt_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',inten
     #ax.legend(handles=scatter.legend_elements()[0], title="Edge shift", ncol = 3, title_fontsize=12, labelspacing=0.05)
     return fig
 
-def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
+def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',width=10,height=6,
+                            dotsize=10,guideline=False):
+    '''
+    Function to plot edge shift vs time.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :colormap: Name of the colormap you want to use for the plot.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Transparency of the points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    fillstyle=['full','none']
+    markers = itertools.cycle(('o','o','v','v','X','X','*','*')) 
+    colors = ['r','b']
+
+    # build figure
+    #fig, (ax0, ax1) = plt.subplots(nrows=2, figsize=(width,height))
+    fig = plt.figure(figsize=(width,height))
+    gs = gridspec.GridSpec(2, 1) 
+    ax0 = plt.subplot(gs[0])
+    ax1 = plt.subplot(gs[1])
+
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    counter=1
+    # plot potential over time
+    if guideline:
+        ax0.plot(newECdf[condition]['absolute time/h'],newECdf['Ewe/V'][condition],
+                 alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+        ax1.plot(newECdf[condition]['absolute time/h'],edge[condition],
+                 alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+    ax0.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], s=dotsize, c='black')
+    # plot Edge shift
+    for i, cycle in enumerate(newECdf['cycle number'].unique()):
+        if cycle in nb_cycle:
+            subdf=newECdf[newECdf['cycle number']==cycle]
+            marker=next(markers)
+            for j, subcycle in enumerate(subdf['half cycle'].unique()):
+                if subdf[subdf['half cycle']==subcycle]['ox/red'].mode()[0]==1:
+                    subcycle_type='charge'
+                    color=colors[0]
+                else:
+                    subcycle_type='discharge'
+                    color=colors[1]
+                if guideline:
+                    ax1.plot(subdf[subdf['half cycle']==subcycle]['absolute time/h'],
+                             edge[subdf[subdf['half cycle']==subcycle].index],
+                            alpha=0.3,linewidth=1.5,color=color,zorder=counter)
+                    counter+=1
+                ax1.plot(subdf[subdf['half cycle']==subcycle]['absolute time/h'],edge[subdf[subdf['half cycle']==subcycle].index],
+                        marker=marker, fillstyle=fillstyle[i%2],color=color,lw=0,
+                        label='cycle '+str(int(cycle))+' '+subcycle_type,zorder=counter)
+                counter+=1
+
+    # axes parameters
+    ax0.minorticks_on()
+    ax1.minorticks_on()
+    ax0.tick_params(axis='both', labelsize=13, direction='in')
+    ax1.tick_params(axis='both', labelsize=13, direction='in')
+    ax0.tick_params(which="minor", axis="both", direction="in")
+    ax1.tick_params(which="minor", axis="both", direction="in")
+    # x
+    ax1.set_xlabel("Time (h)",fontsize=14,labelpad=10)
+    margin = 0.02
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    #ax0.set_xlim(x_min,x_max)
+    #ax1.set_xlim(x_min,x_max)
+    ax0.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax1.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    # y left
+    label_y_right='Edge @ J='+str(edge_intensity)+' (eV)'
+    ax1.set_ylabel(label_y_right,fontsize=14,labelpad=10)
+    # y right
+    margin = 0.1
+    ax0.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    ax0.set_ylim(y_right_min,y_right_max)
+    # adjust ticks
+    ax0.xaxis.set_ticklabels([])
+    # remove last tick label and first tick label for the necessary subplots
+    yticks = ax1.yaxis.get_major_ticks()
+    #yticks[-1].label1.set_visible(False)
+    #plt.subplots_adjust(wspace=.0) # no vertical space between plots
+    plt.subplots_adjust(hspace=.0) # no horizontal space between plots
+    # Put a legend to the right of the current axis
+    leg = ax1.legend(loc='center left', bbox_to_anchor=(1, 0.2), prop={'size': 12})
+    return fig
+
+def plotEshift_vs_t_stacked_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
                             width=10,height=6,dotsize=10,alpha=0.5):
     '''
     Function to plot edge shift vs time.
@@ -1194,24 +1549,13 @@ def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
-    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
     
     # normalize the colormap with respect to the total number of cycles in the df
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
 
     # build figure
     #fig, (ax0, ax1) = plt.subplots(nrows=2, figsize=(width,height))
@@ -1220,11 +1564,11 @@ def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',
     ax0 = plt.subplot(gs[0])
     ax1 = plt.subplot(gs[1])
 
-    condition = merged_df['cycle number'].isin(nb_cycle)
+    condition = newECdf['cycle number'].isin(nb_cycle)
     # plot potential over time
-    ax0.plot(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black')
+    ax0.plot(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black')
     # plot Edge shift
-    ax1.scatter(merged_df['absolute time/h'][condition], edge[condition], s=dotsize, c=merged_df['cycle number'][condition], cmap=colormap, norm=norm)
+    ax1.scatter(newECdf['absolute time/h'][condition], edge[condition], s=dotsize, c=newECdf['cycle number'][condition], cmap=colormap, norm=norm)
 
     # axes parameters
     ax0.minorticks_on()
@@ -1236,22 +1580,22 @@ def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',
     # x
     ax1.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = merged_df['absolute time/h'].max()-merged_df['absolute time/h'].min()
-    x_min=merged_df['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=merged_df['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
     #ax0.set_xlim(x_min,x_max)
     #ax1.set_xlim(x_min,x_max)
-    ax0.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
-    ax1.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
+    ax0.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax1.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
     # y left
     label_y_right='Edge @ J='+str(edge_intensity)+' (eV)'
     ax1.set_ylabel(label_y_right,fontsize=14,labelpad=10)
     # y right
     margin = 0.1
     ax0.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
-    full_range_y_right = merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min()
-    y_right_min=merged_df['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
-    y_right_max=merged_df['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
     ax0.set_ylim(y_right_min,y_right_max)
     # adjust ticks
     ax0.xaxis.set_ticklabels([])
@@ -1264,6 +1608,7 @@ def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',
 
 #### FOR THE MOMENT THESE ONLY WORK FOR DATAFRAMES WITH NORMALISED XAS FILES
 
+## NEEDS LAST VERSION OF MATPLOTLIB
 def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='viridis',
                             width=12,height=6,plot_range=None):
     '''
@@ -1282,25 +1627,12 @@ def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',
     # think about a grid space where all of them can be plotted! future work
     # rate of change between one cycle and another
     # third derivative??
-    
-        
-    total_cycles=len(merged_df['cycle number'].unique())
+
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].min()
-        
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except:
-        raise ValueError('Not a valid nb_cycle.')
-    
-    if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-        raise ValueError('The chosen cycle numbers are not in the sequence.')
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
         
     if plot_range:
         if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
@@ -1311,9 +1643,9 @@ def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',
         rang=[edge.mean()-20,edge.mean()+40]
     # colors
     cm=plt.get_cmap(colormap)
-    norm = Normalize(vmin=merged_df['Ewe/V'].min(), vmax=merged_df['Ewe/V'].max())
+    norm = Normalize(vmin=newECdf['Ewe/V'].min(), vmax=newECdf['Ewe/V'].max())
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
-    colors = sm.to_rgba(merged_df['Ewe/V'])
+    colors = sm.to_rgba(newECdf['Ewe/V'])
     #  build plot
     fig = plt.figure(figsize=(width,height))
     gs = gridspec.GridSpec(1, 2) 
@@ -1322,13 +1654,13 @@ def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',
     ax0 = plt.subplot(gs[0])
     ax1 = plt.subplot(gs[1])
 
-    condition = merged_df['cycle number']==nb_cycle
-    charge,discharge=merged_df['half cycle'][condition].unique()
+    condition = newECdf['cycle number']==nb_cycle
+    charge,discharge=newECdf['half cycle'][condition].unique()
     #char,dess=output_df['half cycle'][output_df['cycle number']==1].unique()
-    for i in merged_df[merged_df['half cycle']==charge].index:
-        ax0.plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]-pd.Series(merged_df[intensity_col][0])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
-    for i in merged_df[merged_df['half cycle']==discharge].index:
-        ax1.plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]-pd.Series(merged_df[intensity_col][0])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
+    for i in newECdf[newECdf['half cycle']==charge].index:
+        ax0.plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]-pd.Series(newECdf[intensity_col][0])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
+    for i in newECdf[newECdf['half cycle']==discharge].index:
+        ax1.plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]-pd.Series(newECdf[intensity_col][0])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
 
     xticks = ax0.xaxis.get_major_ticks()
 
@@ -1366,6 +1698,7 @@ def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',
     fig.suptitle('Cycle '+str(nb_cycle), fontsize=16)
     return fig
 
+## NEEDS LAST VERSION OF MATPLOTLIB
 def plotAbsorptionDiff(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='viridis',
                        width=12,height=5,plot_range=None):
     '''
@@ -1381,31 +1714,12 @@ def plotAbsorptionDiff(merged_df,nb_cycle=None,edge_intensity='inflection',inten
     :return: Plot.
     '''
     # if no cycle number is selected then it just plots the first one
-    total_cycles=len(merged_df['cycle number'].unique())
-
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    try:
-        if type(nb_cycle)==list:
-            if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-                raise ValueError('The chosen cycle numbers are not in the sequence.')
-        elif not nb_cycle:
-            nb_cycle=merged_df['cycle number'].min()
-        else:
-            try:
-                nb_cycle=int(nb_cycle)
-                if nb_cycle not in merged_df['cycle number'].unique():
-                    raise ValueError("Not a valid nb_cycle.")
-                else:
-                    nb_cycle=[nb_cycle]
-            except:
-                pass
-    except:
-        raise ValueError("Not a valid nb_cycle.")
-        
-    
-    if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-        raise ValueError('The chosen cycle numbers are not in the sequence.')
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    print(nb_cycle)
     height=height*len(nb_cycle)
     if plot_range:
         if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
@@ -1416,25 +1730,31 @@ def plotAbsorptionDiff(merged_df,nb_cycle=None,edge_intensity='inflection',inten
         rang=[edge.mean()-20,edge.mean()+40]
     # colors
     cm=plt.get_cmap(colormap)
-    norm = Normalize(vmin=merged_df['Ewe/V'].min(), vmax=merged_df['Ewe/V'].max())
+    norm = Normalize(vmin=newECdf['Ewe/V'].min(), vmax=newECdf['Ewe/V'].max())
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
-    colors = sm.to_rgba(merged_df['Ewe/V'])
+    colors = sm.to_rgba(newECdf['Ewe/V'])
     #  build plot
     fig = plt.figure(figsize=(width,height))
-    gs = gridspec.GridSpec(1*len(nb_cycle), 2) 
+    gs = gridspec.GridSpec(len(nb_cycle), 2) 
 
     for j,cycle in enumerate(nb_cycle):
         # the first subplot
         ax0 = plt.subplot(gs[j,0])
         ax1 = plt.subplot(gs[j,1])
 
-        condition = merged_df['cycle number']==cycle
-        charge,discharge=merged_df['half cycle'][condition].unique()
+        condition = newECdf['cycle number']==cycle
+        charge=discharge=None
+        for half_cycle in newECdf['half cycle'][condition].unique():
+            if newECdf['ox/red'][newECdf['half cycle']==half_cycle].mode()[0]==1:
+                charge=half_cycle
+            else:
+                discharge=half_cycle
+        #charge,discharge=newECdf['half cycle'][condition].unique()
 
-        for i in merged_df[merged_df['half cycle']==charge].index:
-            plt.subplot(gs[j,0]).plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]-pd.Series(merged_df[intensity_col][0])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
-        for i in merged_df[merged_df['half cycle']==discharge].index:
-            plt.subplot(gs[j,1]).plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]-pd.Series(merged_df[intensity_col][0])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
+        for i in newECdf[newECdf['half cycle']==charge].index:
+            plt.subplot(gs[j,0]).plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]-pd.Series(newECdf[intensity_col][0])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
+        for i in newECdf[newECdf['half cycle']==discharge].index:
+            plt.subplot(gs[j,1]).plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]-pd.Series(newECdf[intensity_col][0])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],color=colors[i])
 
         xticks = ax0.xaxis.get_major_ticks()
         ax0.text(0.02, 0.9,'Cycle '+str(cycle), fontsize=13,transform=ax0.transAxes)
@@ -1498,16 +1818,13 @@ def plotAbsorptionDerivative_beta(merged_df,nb_cycle=0,edge_intensity='inflectio
     # rate of change between one cycle and another
     # third derivative??
     # try to also plot the edge as scatter --- how?
-        
-    total_cycles=len(merged_df['cycle number'].unique())
+    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-    except:
-        raise ValueError('Not a valid nb_cycle.')
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
     
     if plot_range:
         if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
@@ -1518,9 +1835,9 @@ def plotAbsorptionDerivative_beta(merged_df,nb_cycle=0,edge_intensity='inflectio
         rang=[edge.mean()-20,edge.mean()+40]
     # colors
     cm=plt.get_cmap(colormap)
-    norm = Normalize(vmin=merged_df['Ewe/V'].min(), vmax=merged_df['Ewe/V'].max())
+    norm = Normalize(vmin=newECdf['Ewe/V'].min(), vmax=newECdf['Ewe/V'].max())
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
-    colors = sm.to_rgba(merged_df['Ewe/V'])
+    colors = sm.to_rgba(newECdf['Ewe/V'])
     #  build plot
     fig = plt.figure(figsize=(width,height))
     gs = gridspec.GridSpec(1, 2) 
@@ -1529,19 +1846,19 @@ def plotAbsorptionDerivative_beta(merged_df,nb_cycle=0,edge_intensity='inflectio
     ax0 = plt.subplot(gs[0])
     ax1 = plt.subplot(gs[1])
 
-    condition = merged_df['cycle number']==nb_cycle
-    charge,discharge=merged_df['half cycle'][condition].unique()
+    condition = newECdf['cycle number']==nb_cycle
+    charge,discharge=newECdf['half cycle'][condition].unique()
     #char,dess=output_df['half cycle'][output_df['cycle number']==1].unique()
-    for i in merged_df[merged_df['half cycle']==charge].index:
-        derivated_series=pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]
+    for i in newECdf[newECdf['half cycle']==charge].index:
+        derivated_series=pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]
         for j in range(deriv):
             derivated_series=derivated_series.diff()
-        ax0.plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
-    for i in merged_df[merged_df['half cycle']==discharge].index:
-        derivated_series=pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]
+        ax0.plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
+    for i in newECdf[newECdf['half cycle']==discharge].index:
+        derivated_series=pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]
         for j in range(deriv):
             derivated_series=derivated_series.diff()
-        ax1.plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
+        ax1.plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
 
     xticks = ax0.xaxis.get_major_ticks()
 
@@ -1595,30 +1912,12 @@ def plotAbsorptionDerivative(merged_df,nb_cycle=0,edge_intensity='inflection',in
     :return: Plot.
     '''
     # if no cycle number is selected then it just plots the first one
-    total_cycles=len(merged_df['cycle number'].unique())
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    try:
-        if type(nb_cycle)==list:
-            if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-                raise ValueError('The chosen cycle numbers are not in the sequence.')
-        elif not nb_cycle:
-            nb_cycle=merged_df['cycle number'].min()
-        else:
-            try:
-                nb_cycle=int(nb_cycle)
-                if nb_cycle not in merged_df['cycle number'].unique():
-                    raise ValueError("Not a valid nb_cycle.")
-                else:
-                    nb_cycle=[nb_cycle]
-            except:
-                pass
-    except:
-        raise ValueError("Not a valid nb_cycle.")
-        
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
     
-    if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-        raise ValueError('The chosen cycle numbers are not in the sequence.')
     height=height*len(nb_cycle)
     if plot_range:
         if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
@@ -1629,31 +1928,31 @@ def plotAbsorptionDerivative(merged_df,nb_cycle=0,edge_intensity='inflection',in
         rang=[edge.mean()-20,edge.mean()+40]
     # colors
     cm=plt.get_cmap(colormap)
-    norm = Normalize(vmin=merged_df['Ewe/V'].min(), vmax=merged_df['Ewe/V'].max())
+    norm = Normalize(vmin=newECdf['Ewe/V'].min(), vmax=newECdf['Ewe/V'].max())
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
-    colors = sm.to_rgba(merged_df['Ewe/V'])
+    colors = sm.to_rgba(newECdf['Ewe/V'])
     #  build plot
     fig = plt.figure(figsize=(width,height))
-    gs = gridspec.GridSpec(1*len(nb_cycle), 2) 
+    gs = gridspec.GridSpec(len(nb_cycle), 2) 
 
     for j,cycle in enumerate(nb_cycle):
         # the first subplot
         ax0 = plt.subplot(gs[j,0])
         ax1 = plt.subplot(gs[j,1])
 
-        condition = merged_df['cycle number']==cycle
-        charge,discharge=merged_df['half cycle'][condition].unique()
+        condition = newECdf['cycle number']==cycle
+        charge,discharge=newECdf['half cycle'][condition].unique()
 
-        for i in merged_df[merged_df['half cycle']==charge].index:
-            derivated_series=pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]
+        for i in newECdf[newECdf['half cycle']==charge].index:
+            derivated_series=pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]
             for k in range(deriv):
                 derivated_series=derivated_series.diff()
-            ax0.plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
-        for i in merged_df[merged_df['half cycle']==discharge].index:
-            derivated_series=pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])]
+            ax0.plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
+        for i in newECdf[newECdf['half cycle']==discharge].index:
+            derivated_series=pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])]
             for k in range(deriv):
                 derivated_series=derivated_series.diff()
-            ax1.plot(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
+            ax1.plot(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])],derivated_series,color=colors[i])
         #### added
 
         xticks = ax0.xaxis.get_major_ticks()
@@ -1714,36 +2013,32 @@ def plot3d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     :return: Plot.
     '''
     
-    total_cycles=len(merged_df['cycle number'].unique())
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
         
     if plot_range:
-        rang=plot_range
+        if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
+            rang=plot_range
+        else:
+            raise ValueError("Not a valid plot_range.")
     else:
         rang=[edge.mean()-20,edge.mean()+40]
 
     # colormap from Ewe/V
     cm=plt.get_cmap(colormap_potential)
-    norm = Normalize(vmin=merged_df['Ewe/V'].min(), vmax=merged_df['Ewe/V'].max())
+    norm = Normalize(vmin=newECdf['Ewe/V'].min(), vmax=newECdf['Ewe/V'].max())
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
 
     absorption=[]
     energy=[]
-    zs = list(merged_df['absolute time/h'])
+    zs = list(newECdf['absolute time/h'])
 
-    for i in range(merged_df.shape[0]):
-        x_data=list(pd.Series(merged_df[energy_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])])
-        y_data=list(pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])])
+    for i in range(newECdf.shape[0]):
+        x_data=list(pd.Series(newECdf[energy_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])])
+        y_data=list(pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])])
         energy.append(x_data)
         absorption.append(y_data)
 
@@ -1757,7 +2052,7 @@ def plot3d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
 
     for i, (p, e, t) in enumerate(zip(profiles,energies,times)):
         ax.plot(e, p, zs=t, zdir='y', 
-                zorder=(len(profiles) - i), color=sm.to_rgba(merged_df['Ewe/V'])[i], alpha=0.5)
+                zorder=(len(profiles) - i), color=sm.to_rgba(newECdf['Ewe/V'])[i], alpha=0.5)
     
 
     ax.minorticks_on()
@@ -1778,17 +2073,17 @@ def plot3d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     cbar.ax.tick_params(labelsize=13)
     cbar.set_label('Potential vs. Li/Li$^+$ (V)', rotation=90, labelpad=10, fontsize=14)
 
-    merged_df[merged_df['cycle number']==1].first_valid_index()
+    newECdf[newECdf['cycle number']==1].first_valid_index()
     #FIRST ANNOTATION
     cm_cycle=plt.get_cmap(colormap_cycle)
     # color map from the total number of cycles in the DF, not from the lenght of the input nb_cycles
-    color_cycle=cm_cycle(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
-    for i,cycle in enumerate(merged_df['cycle number'].unique()):
-        where=merged_df[merged_df['cycle number']==cycle].first_valid_index()
-        maximum=max(merged_df[intensity_col][where])
-        index_max=max(range(len(merged_df[intensity_col][where])), key=(merged_df[intensity_col][where]).__getitem__)
-        maximum_energy=merged_df[energy_col][where][index_max]
-        when=merged_df['absolute time/h'][where]
+    color_cycle=cm_cycle(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
+    for i,cycle in enumerate(newECdf['cycle number'].unique()):
+        where=newECdf[newECdf['cycle number']==cycle].first_valid_index()
+        maximum=max(newECdf[intensity_col][where])
+        index_max=max(range(len(newECdf[intensity_col][where])), key=(newECdf[intensity_col][where]).__getitem__)
+        maximum_energy=newECdf[energy_col][where][index_max]
+        when=newECdf['absolute time/h'][where]
         x2, y2, _ = proj3d.proj_transform(maximum_energy,when,maximum, ax.get_proj())
         ax.annotate("cycle "+str(int(cycle)), xy = (x2,y2), xytext = (-50, 30), fontsize=12, textcoords = 'offset points', ha = 'center', va = 'bottom', arrowprops = dict(width=0.1,headwidth=7,headlength=8,color=color_cycle[i]))
 
@@ -1816,27 +2111,12 @@ def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     :plot_range: List [x,y] containing the energy range of the plot.
     :return: Plot.
     '''
-        # if no cycle number is selected then it just plots all of them
-    total_cycles=len(merged_df['cycle number'].unique())
+    # if no cycle number is selected then it just plots all of them
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    try:
-        if type(nb_cycle)==list:
-            if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-                raise ValueError('The chosen cycle numbers are not in the sequence.')
-        elif not nb_cycle:
-            nb_cycle=merged_df['cycle number'].unique()
-        else:
-            try:
-                nb_cycle=int(nb_cycle)
-                if nb_cycle not in merged_df['cycle number'].unique():
-                    raise ValueError("Not a valid nb_cycle.")
-                else:
-                    nb_cycle=[nb_cycle]
-            except:
-                pass
-    except:
-        raise ValueError("Not a valid nb_cycle.")
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
     if plot_range:
         if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
@@ -1848,9 +2128,9 @@ def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     
     #sub_df=merged_df[merged_df['cycle number'].isin(nb_cycle)]
     all_absorption=[]
-    for i in merged_df.index:
+    for i in newECdf.index:
         #x_data=list(pd.Series(merged_df['shifted energy'][i])[pd.Series(merged_df['shifted energy'][i]).between(rang[0],rang[1])])
-        y_data=list(pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])])
+        y_data=list(pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])])
         #energy.append(x_data)
         #all_absorption.append(y_data)
         all_absorption.append(y_data)
@@ -1862,7 +2142,7 @@ def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     #norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
     norm = plt.Normalize(all_profiles.min(), all_profiles.max())
     fig, (ax0, ax1) = plt.subplots(ncols=2, figsize=(width,height),gridspec_kw={'width_ratios': [1, 1.4]})
-    sub_df=merged_df[merged_df['cycle number'].isin(nb_cycle)].reset_index(drop=True)
+    sub_df=newECdf[newECdf['cycle number'].isin(nb_cycle)].reset_index(drop=True)
     diff_time=sub_df['absolute time/h'].diff()
     cut_indexes=list(sub_df[diff_time>diff_time.describe()['mean']+diff_time.describe()['std']*4].index)
     cut_indexes.append(None)
@@ -1911,8 +2191,8 @@ def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     ax0.tick_params(axis='both', labelsize=13)
     ax0.minorticks_on()
 
-    ax0.set_xlim(2.9,4.8)
-    ax0.set_ylim(0,merged_df['absolute time/h'].max())
+    #ax0.set_xlim(2.9,4.8)
+    ax0.set_ylim(0,newECdf['absolute time/h'].max())
     #im = ax1.pcolormesh(energies, times, profiles, cmap=cmap, norm=norm)
     cbar = fig.colorbar(im, ax=ax1,shrink=0.8)
     cbar.set_label('Normalized absorption',fontsize=14,labelpad=10)
@@ -1927,7 +2207,7 @@ def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     ax1.set_yticklabels([])
     ax1.set_yticks([])
     ax1.set_xlim(rang[0], rang[1])
-    ax1.set_ylim(0,merged_df['absolute time/h'].max())
+    ax1.set_ylim(0,newECdf['absolute time/h'].max())
     
     # add horizontal lines at potential maxima
     #peaks, _ = find_peaks(sub_df['Ewe/V'], prominence=0.1)
@@ -1950,27 +2230,12 @@ def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',i
     :plot_range: List [x,y] containing the energy range of the plot.
     :return: Plot.
     '''
-        # if no cycle number is selected then it just plots all of them
-    total_cycles=len(merged_df['cycle number'].unique())
+    # if no cycle number is selected then it just plots all of them
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
-    try:
-        if type(nb_cycle)==list:
-            if not all(elem in merged_df['cycle number'].unique() for elem in nb_cycle):
-                raise ValueError('The chosen cycle numbers are not in the sequence.')
-        elif not nb_cycle:
-            nb_cycle=merged_df['cycle number'].unique()
-        else:
-            try:
-                nb_cycle=int(nb_cycle)
-                if nb_cycle not in merged_df['cycle number'].unique():
-                    raise ValueError("Not a valid nb_cycle.")
-                else:
-                    nb_cycle=[nb_cycle]
-            except:
-                pass
-    except:
-        raise ValueError("Not a valid nb_cycle.")
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
     if plot_range:
         if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
@@ -1982,9 +2247,9 @@ def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',i
     
     #sub_df=merged_df[merged_df['cycle number'].isin(nb_cycle)]
     all_absorption=[]
-    for i in merged_df.index:
+    for i in newECdf.index:
         #x_data=list(pd.Series(merged_df['shifted energy'][i])[pd.Series(merged_df['shifted energy'][i]).between(rang[0],rang[1])])
-        y_data=list(pd.Series(merged_df[intensity_col][i])[pd.Series(merged_df[energy_col][i]).between(rang[0],rang[1])])
+        y_data=list(pd.Series(newECdf[intensity_col][i])[pd.Series(newECdf[energy_col][i]).between(rang[0],rang[1])])
         #energy.append(x_data)
         #all_absorption.append(y_data)
         all_absorption.append(y_data)
@@ -1997,7 +2262,7 @@ def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',i
     norm = plt.Normalize(all_profiles.min(), all_profiles.max())
     fig, (ax0, ax1) = plt.subplots(ncols=2, figsize=(width,height),gridspec_kw={'width_ratios': [1, 1.4]})
     for cycle in nb_cycle:
-        sub_df=merged_df[merged_df['cycle number']==cycle]
+        sub_df=newECdf[newECdf['cycle number']==cycle]
         absorption=[]
         energy=[]
         times=[]
@@ -2039,7 +2304,7 @@ def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',i
     ax0.minorticks_on()
 
     ax0.set_xlim(2.9,4.8)
-    ax0.set_ylim(0,merged_df['absolute time/h'].max())
+    ax0.set_ylim(0,newECdf['absolute time/h'].max())
     #im = ax1.pcolormesh(energies, times, profiles, cmap=cmap, norm=norm)
     cbar = fig.colorbar(im, ax=ax1,shrink=0.8)
     cbar.set_label('Normalized absorption',fontsize=14,labelpad=10)
@@ -2054,7 +2319,7 @@ def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',i
     ax1.set_yticklabels([])
     ax1.set_yticks([])
     ax1.set_xlim(rang[0], rang[1])
-    ax1.set_ylim(0,merged_df['absolute time/h'].max())
+    ax1.set_ylim(0,newECdf['absolute time/h'].max())
     
     # add horizontal lines at potential maxima
     #peaks, _ = find_peaks(sub_df['Ewe/V'], prominence=0.1)
@@ -2070,7 +2335,7 @@ def plotdQdU_dEdgedU_vs_U(electrodf,merged_df,edge_intensity=0.7,intensity_col='
     Function to plot a capacity vs potential graph.
     
     :electrodf: Pandas dataframe with the data from the EC Lab file.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot.
     :reduce_by: Factor by which you want to reduce the number of points on your dataframe.
     :boxcar: Factor indicating the size of the moving window of a moving average filter
     :savgol: Tuple (x,y) with the parameters of the Savitzky-Golay filter that you want to apply.
@@ -2085,20 +2350,16 @@ def plotdQdU_dEdgedU_vs_U(electrodf,merged_df,edge_intensity=0.7,intensity_col='
     mass=mass/1000 # mg to g
     newECdf=electrodf.copy(deep=True)
     newmergeddf=merged_df.copy(deep=True)
+    #newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    check_cycles(newmergeddf)
+    nb_cycle=convert_nb_cycle(newmergeddf,nb_cycle)
+    
     #edge=get_edge(merged_df,intensity=edge_intensity)
     edge_col_name='edge @ J='+str(edge_intensity)+'/eV'
-    newmergeddf[edge_col_name]=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    total_cycles=len(merged_df['cycle number'].unique())
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in electrodf['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique().min()
+    newmergeddf[edge_col_name]=get_edge(newmergeddf,intensity_val=edge_intensity,intensity_col=intensity_col)
+    total_cycles=len(newmergeddf['cycle number'].unique())
+
     #dQdV
     newECdf['dQdV']=(newECdf['Capacity/mA.h']/mass).diff()/newECdf['Ewe/V'].diff()
     # apply filters/smoothing
@@ -2107,44 +2368,58 @@ def plotdQdU_dEdgedU_vs_U(electrodf,merged_df,edge_intensity=0.7,intensity_col='
     newECdf['dQdV']=savgol_filter(newECdf['dQdV'],savgol[0],savgol[1])
     #dEdgedV
     newmergeddf['dE0dV']=newmergeddf[edge_col_name].diff()/newmergeddf['Ewe/V'].diff()
-
     cm=plt.get_cmap(colormap1)
     # color map from the total number of cycles in the DF, not from the length of the input nb_cycles
     color_dqdv=cm(np.linspace(0, 1, total_cycles))
     
     # build figure
-    fig, ax = plt.subplots(figsize=(width,height))
-    ax1 = ax.twinx()
-    subdf=newECdf[newECdf['cycle number']==nb_cycle]
-    i=np.where(merged_df['cycle number'].unique()==nb_cycle)[0][0]
-    ax.scatter(subdf['Ewe/V'],subdf['dQdV'],s=dotsize,color=color_dqdv[i],label='cycle '+str(int(nb_cycle)),alpha=alpha)
-    subdf_merged=newmergeddf[newmergeddf['cycle number']==nb_cycle]
-    ax1.plot(subdf_merged['Ewe/V'],subdf_merged['dE0dV'],alpha=alpha,linewidth=0.5,color='lightgrey')
-    ax1.scatter(subdf_merged['Ewe/V'],subdf_merged['dE0dV'],c=subdf_merged['absolute time/h'], cmap=colormap2, alpha=alpha, s=dotsize2)
-    # set axes labels and limits
-    ax.tick_params(axis='both', labelsize=13, direction='in')
-    # x
+    #fig = plt.figure(figsize=(width,height))
+    print(len(nb_cycle))
+    fig, ax = plt.subplots(len(nb_cycle), figsize=(width,height))
+    #axs[0, 0].plot(x, y)
+    #axs[1, 1].scatter(x, y)
+
+    #gs = gridspec.GridSpec(len(nb_cycle),1) 
+    # defining axes limits
     margin=0.05
-    xmin=electrodf['Ewe/V'].min()-(electrodf['Ewe/V'].max()-electrodf['Ewe/V'].min())*margin/(1-margin*2)
-    xmax=electrodf['Ewe/V'].max()+(electrodf['Ewe/V'].max()-electrodf['Ewe/V'].min())*margin/(1-margin*2)
-    ax.set_xlim(xmin,xmax)
-    ax.set_xlabel("Potential vs. Li/Li$^+$ (V)",fontsize=14)
-    # y left
+    xmin=newECdf['Ewe/V'].min()-(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
+    xmax=newECdf['Ewe/V'].max()+(newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min())*margin/(1-margin*2)
     ylim=(abs(newECdf['dQdV'].quantile(0.95))+abs(newECdf['dQdV'].quantile(0.05)))/2
-    ax.set_ylim(-ylim,ylim)
-    if mass==1:
-        ax.set_ylabel("dQ/dV (mAh$\cdot$V$^{-1}$)",fontsize=14)
-    else:
-        ax.set_ylabel("dQ/dV (mAh$\cdot$g$^{-1}\cdot$V$^{-1}$)",fontsize=14)
-    # y right
-    ax1.tick_params(axis='y', labelsize=13, direction='in')
-    ax1.set_ylabel("dE$_\mathregular{edge}$/dV (eV$\cdot$V$^{-1}$)",fontsize=14)
     ylim_right=(abs(newmergeddf['dE0dV'].quantile(0.98))+abs(newmergeddf['dE0dV'].quantile(0.02)))/2
-    ax1.set_ylim(-ylim_right,ylim_right)
-    # put color legend
-    norm = Normalize(vmin=int(electrodf['cycle number'].min()), vmax=int(electrodf['cycle number'].max()))
-    sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
-    leg = ax.legend(loc='upper left',prop={'size': 14},markerscale=2)
+    for j,cycle in enumerate(nb_cycle):
+        # the first subplot
+        if len(nb_cycle)==1:
+            ax0 = ax
+        else:
+            ax0 = ax[j]
+        ax1 = ax0.twinx()
+        
+        subdf=newECdf[newECdf['cycle number']==cycle]
+        i=np.where(merged_df['cycle number'].unique()==cycle)[0][0]
+        ax0.scatter(subdf['Ewe/V'],subdf['dQdV'],s=dotsize,color=color_dqdv[i],label='cycle '+str(int(cycle)),alpha=alpha)
+        subdf_merged=newmergeddf[newmergeddf['cycle number']==cycle]
+        ax1.plot(subdf_merged['Ewe/V'],subdf_merged['dE0dV'],alpha=alpha,linewidth=0.5,color='lightgrey')
+        ax1.scatter(subdf_merged['Ewe/V'],subdf_merged['dE0dV'],c=subdf_merged['absolute time/h'],
+                    cmap=colormap2, alpha=alpha, s=dotsize2)
+        # set axes labels and limits
+        ax0.tick_params(axis='both', labelsize=13, direction='in')
+        # x
+        ax0.set_xlim(xmin,xmax)
+        ax0.set_xlabel("Potential vs. Li/Li$^+$ (V)",fontsize=14)
+        # y left
+        ax0.set_ylim(-ylim,ylim)
+        if mass==1:
+            ax0.set_ylabel("dQ/dV (mAh$\cdot$V$^{-1}$)",fontsize=14)
+        else:
+            ax0.set_ylabel("dQ/dV (mAh$\cdot$g$^{-1}\cdot$V$^{-1}$)",fontsize=14)
+        # y right
+        ax1.tick_params(axis='y', labelsize=13, direction='in')
+        ax1.set_ylabel("dE$_\mathregular{edge}$/dV (eV$\cdot$V$^{-1}$)",fontsize=14)
+        ax1.set_ylim(-ylim_right,ylim_right)
+        # put color legend
+        norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(electrodf['cycle number'].max()))
+        sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
+        leg = ax0.legend(loc='upper left',prop={'size': 14},markerscale=2)
     return fig
 
 
@@ -2179,54 +2454,37 @@ def fit_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflecti
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
     
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
-    #colormap according to total number of cycles
-    #cm=plt.get_cmap(colormap)
-    #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
-    
     # normalize the colormap with respect to the total number of cycles in the df
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     cm=plt.get_cmap(colormap)
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
     # build figure
     fig, ax = plt.subplots(figsize=(width,height))
-    condition = merged_df['cycle number'].isin(nb_cycle)
+    condition = newECdf['cycle number'].isin(nb_cycle)
     # plot Edge shift
-    scatter = ax.scatter(merged_df['absolute time/h'][condition], edge[condition], s=dotsize, c=merged_df['cycle number'][condition], cmap=colormap, norm=norm)
+    scatter = ax.scatter(newECdf['absolute time/h'][condition], edge[condition], s=dotsize, c=newECdf['cycle number'][condition], cmap=colormap, norm=norm)
     
-    axis_color=sm.to_rgba(merged_df['cycle number'][condition].min())
+    axis_color=sm.to_rgba(newECdf['cycle number'][condition].min())
     ax.spines['left'].set_color(axis_color)
     ax.tick_params(axis='y', colors=axis_color)
     ax.yaxis.label.set_color(axis_color)
     
     # plot fit lines
     if points!=None:
-        res,idxs=fit_lines(merged_df['absolute time/h'],edge,points)
+        res,idxs=fit_lines(newECdf['absolute time/h'],edge,points)
         for i,segment in enumerate(res):
-            section_x=merged_df['absolute time/h'][idxs[i]:idxs[i+1]+1]
+            section_x=newECdf['absolute time/h'][idxs[i]:idxs[i+1]+1]
             ax.plot(section_x, segment.intercept + segment.slope*section_x, 'r', label='fitted line '+str(i))
 
     # plot potential over time
     ax1 = ax.twinx()
-    ax1.scatter(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black',s=6, marker="_")
-    #ax1.plot(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black')
-    #for cycle in nb_cycle:
-    #    ax1.plot(merged_df['absolute time/h'][merged_df['cycle number']==cycle],merged_df['Ewe/V'][merged_df['cycle number']==cycle], color='black')
+    ax1.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=6, marker="_")
     # axes parameters
     ax.tick_params(axis='both', labelsize=13, direction='in')
     ax1.tick_params(axis='both', labelsize=13, direction='in')
@@ -2236,9 +2494,9 @@ def fit_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflecti
     # x
     ax.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = merged_df['absolute time/h'].max()-merged_df['absolute time/h'].min()
-    x_min=merged_df['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=merged_df['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
     ax.set_xlim(x_min,x_max)
     # y left
     label_y_right='Edge @ J='+str(edge_intensity)+' (eV)'
@@ -2246,20 +2504,12 @@ def fit_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflecti
     # y right
     margin = 0.1
     ax1.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
-    full_range_y_right = merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min()
-    y_right_min=merged_df['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
-    y_right_max=merged_df['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
     ax1.set_ylim(y_right_min,y_right_max)
-    #ax1.set_ylim(2.8,5) # check later
     # put a legend
     sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(colormap), norm=norm)
-    #if len(nb_cycle)>5:
-        #cbar = fig.colorbar(sm)
-        #cbar.set_label('Cycle', rotation=270, labelpad=10, fontsize=14)
-    #else:
-        #leg = ax.legend(loc='upper left',prop={'size': 13})
-        #leg = ax.legend(handles=scatter.legend_elements()[0], labels=['cycle '+str(int(i)) for i in nb_cycle], prop={'size': 12})
-    #ax.legend(handles=scatter.legend_elements()[0], title="Edge shift", ncol = 3, title_fontsize=12, labelspacing=0.05)
     return fig
 
 def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',
@@ -2277,53 +2527,43 @@ def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inf
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
     
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
     #colormap according to total number of cycles
     cm=plt.get_cmap(colormap)
-    color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
+    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
     
     # normalize the colormap with respect to the total number of cycles in the df
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     #cm=plt.get_cmap(colormap)
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
     # build figure
     fig, ax = plt.subplots(figsize=(width,height))
-    condition = merged_df['cycle number'].isin(nb_cycle)
+    condition = newECdf['cycle number'].isin(nb_cycle)
     # plot Edge shift
     #scatter = ax.scatter(merged_df['absolute time/h'][condition], edge[condition], s=dotsize, c=merged_df['cycle number'][condition], cmap=colormap, norm=norm)
     
-    axis_color=sm.to_rgba(merged_df['cycle number'][condition].min())
+    axis_color=sm.to_rgba(newECdf['cycle number'][condition].min())
     ax.spines['left'].set_color(axis_color)
     ax.tick_params(axis='y', colors=axis_color)
     ax.yaxis.label.set_color(axis_color)
     
     # plot fit lines
     if points!=None:
-        res,idxs=fit_lines(merged_df['absolute time/h'],edge,points)
+        res,idxs=fit_lines(newECdf['absolute time/h'],edge,points)
         for i,segment in enumerate(res):
-            section_x=merged_df['absolute time/h'][idxs[i]:idxs[i+1]+1]
-            cycle=merged_df[idxs[i]:idxs[i+1]]['cycle number'].mode()[0]
-            color_idx=np.where(merged_df['cycle number'].unique()==cycle)[0][0]
+            section_x=newECdf['absolute time/h'][idxs[i]:idxs[i+1]+1]
+            cycle=newECdf[idxs[i]:idxs[i+1]]['cycle number'].mode()[0]
+            color_idx=np.where(newECdf['cycle number'].unique()==cycle)[0][0]
             ax.plot(section_x, segment.intercept + segment.slope*section_x, 'r', label='fitted line '+str(i), linewidth=linewidth, color=color_dqdv[color_idx])
 
     # plot potential over time
     ax1 = ax.twinx()
-    ax1.scatter(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black',s=6, marker="_")
+    ax1.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=6, marker="_")
     #ax1.plot(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black')
     #for cycle in nb_cycle:
     #    ax1.plot(merged_df['absolute time/h'][merged_df['cycle number']==cycle],merged_df['Ewe/V'][merged_df['cycle number']==cycle], color='black')
@@ -2336,9 +2576,9 @@ def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inf
     # x
     ax.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = merged_df['absolute time/h'].max()-merged_df['absolute time/h'].min()
-    x_min=merged_df['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=merged_df['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
     ax.set_xlim(x_min,x_max)
     # y left
     label_y_right='Edge @ J='+str(edge_intensity)+' (eV)'
@@ -2346,9 +2586,9 @@ def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inf
     # y right
     margin = 0.1
     ax1.set_ylabel("Potential vs. Li/Li$^+$ (V)",fontsize=14,labelpad=10)
-    full_range_y_right = merged_df['Ewe/V'].max()-merged_df['Ewe/V'].min()
-    y_right_min=merged_df['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
-    y_right_max=merged_df['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
+    full_range_y_right = newECdf['Ewe/V'].max()-newECdf['Ewe/V'].min()
+    y_right_min=newECdf['Ewe/V'].min()-(full_range_y_right)*margin/(1-margin*2)
+    y_right_max=newECdf['Ewe/V'].max()+(full_range_y_right)*2*margin/(1-margin*4)
     ax1.set_ylim(y_right_min,y_right_max)
     #ax1.set_ylim(2.8,5) # check later
     # put a legend
@@ -2380,25 +2620,14 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
-    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
     #colormap according to total number of cycles
     cm=plt.get_cmap(colormap)
-    color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
+    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
     
     fig = plt.figure(constrained_layout=True)
     fig.set_size_inches(width, height)
@@ -2407,7 +2636,7 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
     maxs = []
     mins = []
     widths = []
-    for index, row in merged_df.groupby('half cycle').agg({'Ewe/V': ['min', 'max']}).iterrows():
+    for index, row in newECdf.groupby('half cycle').agg({'Ewe/V': ['min', 'max']}).iterrows():
         width=row[1]-row[0]
         if width !=0:
             half_cycles.append(index)
@@ -2420,12 +2649,14 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
     # PLOTTING THE EDGE EVOLUTION
     art_idx=0
     for col in range(len(half_cycles)):
-        condition=merged_df['half cycle']==half_cycles[col]
+        condition=newECdf['half cycle']==half_cycles[col]
         index_cm=col//2
         ax0 = fig.add_subplot(gs_top[0,col])
-        ax0.plot(merged_df[condition]['Ewe/V'],edge[art_idx:art_idx+len(merged_df[condition]['Ewe/V'])],alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax0.scatter(merged_df[condition]['Ewe/V'],edge[art_idx:art_idx+len(merged_df[condition]['Ewe/V'])],label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
-        art_idx=art_idx+len(merged_df[condition]['Ewe/V'])
+        ax0.plot(newECdf[condition]['Ewe/V'],edge[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],
+                 alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax0.scatter(newECdf[condition]['Ewe/V'],edge[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],
+                    label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
+        art_idx=art_idx+len(newECdf[condition]['Ewe/V'])
         # remove last tick label and first tick label for the necessary subplots
         #ax.yaxis.set_ticklabels([])
         ax0.get_xaxis().set_ticks([])
@@ -2451,13 +2682,14 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
     art_idx=0
     # PLOTTING CONCENTRATION EVOLUTION
     for col in range(len(half_cycles)):
-        condition=merged_df['half cycle']==half_cycles[col]
+        condition=newECdf['half cycle']==half_cycles[col]
         ax1 = fig.add_subplot(gs_top[1,col])
         for conc in conc_array:
-            ax1.plot(merged_df[condition]['Ewe/V'],conc[art_idx:art_idx+len(merged_df[condition]['Ewe/V'])],alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-            ax1.scatter(merged_df[condition]['Ewe/V'],conc[art_idx:art_idx+len(merged_df[condition]['Ewe/V'])],s=dotsize*5/6,zorder=1)
+            ax1.plot(newECdf[condition]['Ewe/V'],conc[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],
+                     alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+            ax1.scatter(newECdf[condition]['Ewe/V'],conc[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],s=dotsize*5/6,zorder=1)
             #ax1.scatter(output_cell4_df[condition]['Ewe/V'],conc[art_idx:art_idx+len(output_cell4_df[condition]['Ewe/V'])],s=15)
-        art_idx=art_idx+len(merged_df[condition]['Ewe/V'])
+        art_idx=art_idx+len(newECdf[condition]['Ewe/V'])
         # remove last tick label and first tick label for the necessary subplots
         #ax1.xaxis.set_major_locator(loc)
         xticks = ticker.MaxNLocator(round(widths[col]/0.25))
@@ -2508,26 +2740,15 @@ def U_Eshift_conc_vs_t_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intens
     :alpha: Transparency of the points.
     :return: Plot.
     '''
-    total_cycles=len(merged_df['cycle number'].unique())
-    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
-    
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in merged_df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
-        nb_cycle=merged_df['cycle number'].unique()
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
     #colormap according to total number of cycles
     #cm=plt.get_cmap(colormap)
     #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
-    norm = Normalize(vmin=int(merged_df['cycle number'].min()), vmax=int(merged_df['cycle number'].max()))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     fig = plt.figure(constrained_layout=True)
     fig.set_size_inches(width, height)
 
@@ -2536,20 +2757,23 @@ def U_Eshift_conc_vs_t_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intens
     ax0 = plt.subplot(gs[0])
     ax1 = plt.subplot(gs[1])
     ax2 = plt.subplot(gs[2])
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    if greyline:
+        ax0.plot(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition],
+                 alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax1.plot(newECdf['absolute time/h'][condition], edge[condition],
+                 alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
     # PLOTTING THE POTENTIAL
-    
-    
-    # PLOTTING THE EDGE EVOLUTION
-    condition = merged_df['cycle number'].isin(nb_cycle)
-    # PLOTTING THE POTENTIAL
-    ax0.scatter(merged_df['absolute time/h'][condition],merged_df['Ewe/V'][condition], color='black',s=dotsize*3/5, marker="_")
+    ax0.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=dotsize*3/5, marker="_",
+                zorder=1)
     # PLOTTING THE EDGE SHIFT
-    ax1.scatter(merged_df['absolute time/h'][condition], edge[condition], s=dotsize, c=merged_df['cycle number'][condition], cmap=colormap, norm=norm)
+    ax1.scatter(newECdf['absolute time/h'][condition], edge[condition], s=dotsize, c=newECdf['cycle number'][condition], 
+                cmap=colormap, norm=norm, zorder=1)
     # PLOTTING THE CONCENTRATION PROFILE
     for conc in conc_array:
         if greyline:
-            ax2.plot(merged_df[condition]['absolute time/h'],conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax2.scatter(merged_df[condition]['absolute time/h'],conc,s=dotsize*5/6,zorder=1)
+            ax2.plot(newECdf[condition]['absolute time/h'],conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax2.scatter(newECdf[condition]['absolute time/h'],conc,s=dotsize*5/6,zorder=1)
             
     # axes parameters
     ax0.minorticks_on()
@@ -2566,15 +2790,15 @@ def U_Eshift_conc_vs_t_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intens
     # x
     ax2.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = merged_df['absolute time/h'].max()-merged_df['absolute time/h'].min()
-    x_min=merged_df['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=merged_df['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
     #ax0.set_xlim(x_min,x_max)
     #ax1.set_xlim(x_min,x_max)
     #ax2.set_xlim(x_min,x_max)
-    ax0.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
-    ax1.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
-    ax2.set_xlim(merged_df['absolute time/h'].min(),merged_df['absolute time/h'].max())
+    ax0.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax1.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax2.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
     # y label
     ax0.set_ylabel('Potential vs. Li/Li$^+$ (V)',fontsize=14,labelpad=10)
     ax1.set_ylabel('Edge @ J='+str(edge_intensity)+' (eV)',fontsize=14,labelpad=10)
