@@ -3,3 +3,4 @@ numpy
 pathlib
 scipy
 matplotlib==3.5.3
+h5py
