@@ -1,4 +1,5 @@
-import numpy as np, pandas as pd, re, os, pathlib, glob
+# basic data treatment libraries
+import numpy as np, pandas as pd, scipy as sp, re, os, pathlib, glob
 from datetime import datetime, timedelta
 from time import mktime
 import h5py
@@ -25,17 +26,20 @@ from mpl_toolkits.mplot3d.axes3d import Axes3D
 from mpl_toolkits.mplot3d import proj3d
 from matplotlib import gridspec
 from matplotlib import ticker
+from matplotlib.ticker import MaxNLocator
 
-# --------------------------------------------------- extracting data from files ---------------------------------------------------
+
+# -------------------------------------------- getting pandas dataframes from files --------------------------------------------
 def getECdf_single(EC_filename, with_settings=0, acTime=1):
     '''
-    Function to get a pandas dataframe from an EC Lab file (Must have an .mpt extension).
+    Function to get a pandas dataframe from an EC Lab file (must have an .mpt extension).
     
-    :EC_filename: Complete path of the file
-    :with_settings: Set to 1 if another dataframe with the settings written in the file header is desired.
-    :acTime: Usually, the EC Lab file has a line indicating when the acquisition started. If not, you can set it as a string with the format m/d/Y H:M:S.f
+    :EC_filename: Complete path of the EC Lab file.
+    :with_settings: Default set to 0. Set to 1 if another dataframe with the settings written in the file header is desired.
+    :acTime: Usually, the EC Lab file has a line indicating when the acquisition started. If not, you must set it as a string with the format 'm/d/Y H:M:S.f'
     :return: Returns a pandas dataframe with the data from the EC Lab file.
     '''
+    # reading the file
     filename, file_extension = os.path.splitext(EC_filename)
     if file_extension!='.mpt':
         raise ValueError("File type not suppported. It must have an .mpt extension.")
@@ -48,7 +52,7 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
     # get number of header lines
     mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
     rawHeader = "".join(linesEC[:mainHeaderIdx])
-    # MAIN DF
+    # MAIN dataframe
     df=pd.read_csv(EC_filename, header=mainHeaderIdx, encoding='ISO-8859-1', sep="\t", skip_blank_lines=False, decimal=delim)
     df=df.dropna(how='all', axis=1)
     # get acquisition date
@@ -109,11 +113,11 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
 
 def getECdf(*args, with_settings=0, acTime=1):
     '''
-    Function to get a pandas dataframe from several EC Lab files (Must have an .mpt extension).
+    Function to get a pandas dataframe from one or several EC Lab files (must have an .mpt extension).
     
-    :*args: Complete path(s) of the file(s).
-    :with_settings: Set to 1 if another dataframe with the settings written in the file header is desired.
-    :acTime: Usually, the EC Lab file has a line indicating when the acquisition started. If not, you can set it as a string with the format m/d/Y H:M:S.f
+    :*args: String(s) containing the complete path(s) of the file(s). Must be separated by commas.
+    :with_settings: Default set to 0. Set to 1 if you want an additional dataframe with the settings that are written in the file header.
+    :acTime: Usually, the EC Lab file has a line indicating when the acquisition started. If not, you must set it as a string with the format 'm/d/Y H:M:S.f'
     :return: Returns a pandas dataframe with the data from EC Lab file(s).
     '''
     # get an additional dataframe with the settings or not
@@ -122,7 +126,6 @@ def getECdf(*args, with_settings=0, acTime=1):
     else:
         base_df,main_settings_df=getECdf_single(args[0],with_settings,acTime)
         main_settings_df=main_settings_df[main_settings_df['Ns'].isin(base_df['Ns'].unique())]
-    #if len(args)>1:
     # add a column with the EC filename
     base_df['filename']=os.path.basename(args[0])
     cols = list(base_df.columns)
@@ -131,7 +134,6 @@ def getECdf(*args, with_settings=0, acTime=1):
     base_df.attrs={'File 1':base_df.attrs}
     # append data from the other EC lab files
     for i,file in enumerate(args[1:]):
-        #print("IM HERE")
         if with_settings==0:
             next_df=getECdf_single(file)
         else:
@@ -145,6 +147,7 @@ def getECdf(*args, with_settings=0, acTime=1):
         cols = list(next_df.columns)
         cols = [cols[-1]] + cols[:-1]
         next_df = next_df[cols]
+        # correct half cycles and cycle numbers
         first_oxred=next_df['ox/red'][0]
         if len(next_df['half cycle'].unique())>1:
             halfcycles_first=next_df.loc[0:next_df[next_df['ox/red']!=first_oxred].index[0]-1,'half cycle']
@@ -153,10 +156,9 @@ def getECdf(*args, with_settings=0, acTime=1):
                 next_df.loc[0:next_df[next_df['ox/red']!=first_oxred].index[0]-1,'half cycle']=halfcycles_first.unique()[-1]
             if cycles_first.unique().size>1:
                 next_df.loc[0:next_df[next_df['ox/red']!=first_oxred].index[0]-1,'cycle number']=cycles_first.unique()[-1]
-        
+        # correct (Q-Qo)/mA.h
         next_df['(Q-Qo)/mA.h']=next_df['(Q-Qo)/mA.h']+base_df['(Q-Qo)/mA.h'].iloc[-1]
         if first_oxred==base_df['ox/red'].iloc[-1]:
-            #print('equal first ox red yes')
             next_df['half cycle']=next_df['half cycle']-next_df['half cycle'].min()+base_df['half cycle'].iloc[-1]
             next_df['cycle number']=next_df['cycle number']-next_df['cycle number'].min()+base_df['cycle number'].iloc[-1]
             next_df.loc[next_df[next_df['half cycle']==next_df['half cycle'].min()].index,'Q charge/discharge/mA.h']+=base_df['Q charge/discharge/mA.h'].iloc[-1]
@@ -186,7 +188,7 @@ def getECdf(*args, with_settings=0, acTime=1):
 
 def ECsettingsdf(setLines,delim):
     '''
-    Function to get a pandas dataframe of the EC Lab file settings written in the header (actually a sub-function used inside getECdf).
+    Function to get a pandas dataframe of the EC Lab file settings that written in the header (actually a sub-function used inside getECdf).
     :setLines: Header lines containing the settings data.
     :delim: Type of delimiter used (, or .).
     :return: Returns a pandas dataframe with the settings data.
@@ -244,6 +246,11 @@ def ECsettingsdf_transform(set_df):
     return set_df
 
 def getECHeaderDict(text):
+    '''
+    Function to get a dictionary of the header in an EC Lab mpt file.
+    :text: Header text
+    :return: Returns a dictionary.
+    '''
     headerDict = {}
     newList = []
     for i,line in enumerate(text):
@@ -287,17 +294,13 @@ def getECHeaderDict(text):
 
 def getXASfilesdf(XAS_folder,filters=[],recursive=True):
     '''
-    Function to get a pandas dataframe of the XAS files in a folder.
+    Function to get a pandas dataframe with a list of the XAS files in a folder (files must have a .txt extension).
     
-    :XAS_folder: Complete path of the folder where the XAS files are.
+    :XAS_folder: String with the complete path of the folder where the XAS files are.
     :filters: A list of strings containing filter words to select the XAS filenames.
     :recursive: default True if you want to look in the folders recursively.
-    :return: Returns a pandas dataframe with the XAS file information.
+    :return: Returns a pandas dataframe with the XAS filelist information.
     '''
-    # absolute path to search all text files inside a specific folder
-    #path = XAS_folder+'/*.txt'
-    #files = glob.glob(path)
-    # list to store files name
     files = []
     if type(filters)==str:
         filters=[filters]
@@ -308,17 +311,21 @@ def getXASfilesdf(XAS_folder,filters=[],recursive=True):
         path = XAS_folder+'/*.txt'
         files = glob.glob(path)
         files = [f for f in files if all(word in f for word in filters)]
+    print('Finished file filtering.')
     if len(files)==0:
         raise ValueError("XAS folder empty. Choose another folder.")
     else:
         XAS_dictlist = []
-        for f in files:
+        for i,f in enumerate(files):
             with open(f, 'r') as openFile:
                 lines = openFile.readlines()
                 check=True if '#' in lines[0] else False
             if check:
                 XAS_dictlist.append(getSingleXASdict(f))
                 #XAS_dictlist.append(getSingleXASdict_simplified(f))
+            if (i%500==0) and (i>0):
+                print(str(i)+" files loaded.")
+        print("All files loaded.")
         XAS_df = pd.DataFrame(XAS_dictlist)
         XAS_df=XAS_df.sort_values(by='start time', ignore_index=True)
         XAS_df['stop time']=XAS_df['start time']+pd.TimedeltaIndex(XAS_df['elapsed time/s'], unit='S')
@@ -336,17 +343,13 @@ def getXASfilesdf(XAS_folder,filters=[],recursive=True):
 
 def getXASfilesdf_samba_txt(XAS_folder,filters=[],recursive=False):
     '''
-    Function to get a pandas dataframe of the XAS files in a folder.
+    Function to get a pandas dataframe with a list of the XAS files in a folder (SAMBA beamline format, files must have a .txt extension).
     
-    :XAS_folder: Complete path of the folder where the XAS files are.
+    :XAS_folder: String with the complete path of the folder where the XAS files are.
     :filters: A list of strings containing filter words to select the XAS filenames.
-    :recursive: default True if you want to look in the folders recursively.
-    :return: Returns a pandas dataframe with the XAS file information.
+    :recursive: default False. Set to True if you want to look in the folders recursively.
+    :return: Returns a pandas dataframe with the XAS filelist information.
     '''
-    # absolute path to search all text files inside a specific folder
-    #path = XAS_folder+'/*.txt'
-    #files = glob.glob(path)
-    # list to store files name
     files = []
     if type(filters)==str:
         filters=[filters]
@@ -382,17 +385,13 @@ def getXASfilesdf_samba_txt(XAS_folder,filters=[],recursive=False):
 
 def getXASfilesdf_samba_hdf(XAS_folder,filters=[],recursive=False):
     '''
-    Function to get a pandas dataframe of the XAS files in a folder.
+    Function to get a pandas dataframe with a list of the XAS files in a folder (SAMBA beamline format, files must have an .hdf extension).
     
-    :XAS_folder: Complete path of the folder where the XAS files are.
+    :XAS_folder: String with the complete path of the folder where the XAS files are.
     :filters: A list of strings containing filter words to select the XAS filenames.
-    :recursive: default True if you want to look in the folders recursively.
-    :return: Returns a pandas dataframe with the XAS file information.
+    :recursive: default False. Set to True if you want to look in the folders recursively.
+    :return: Returns a pandas dataframe with the XAS filelist information.
     '''
-    # absolute path to search all text files inside a specific folder
-    #path = XAS_folder+'/*.txt'
-    #files = glob.glob(path)
-    # list to store files name
     files = []
     if type(filters)==str:
         filters=[filters]
@@ -420,33 +419,48 @@ def getXASfilesdf_samba_hdf(XAS_folder,filters=[],recursive=False):
 def mergeXASdfs_samba(hdf_df,txt_df):
     r = '({})'.format('|'.join(hdf_df['filename']))
     first_merge = txt_df['filename'].str.extract(r, expand=False).fillna(txt_df['filename'])
-    #merged_df = hdf_df.merge(txt_df.drop('filename', 1), left_on='filename', right_on=first_merge, how='outer')
-    merged_df = txt_df.merge(hdf_df.rename(columns={"filename":'filename hdf'}), left_on=first_merge, right_on='filename hdf', how='outer').drop(columns=['filename hdf'])
+    merged_df = txt_df.merge(hdf_df.rename(columns={"filename":'filename hdf'}), left_on=first_merge,
+                             right_on='filename hdf', how='outer').drop(columns=['filename hdf'])
     merged_df=merged_df.sort_values(by='average time', ignore_index=True)
     a=(merged_df.applymap(type) == list).all()
     for col in a.index[a]:
         merged_df[col]=merged_df[col].apply(lambda x: np.array(x))
     return merged_df
 
-def getXASdf_samba(path1,path2=None,filters1=[],filters2=[]):
+def getXASdf_samba(path1,path2=None,filters1=[],filters2=[],recursive=False):
+    '''
+    Function to get a pandas dataframe with the information of a set of XAS files (SAMBA beamline format).
+    
+    :path1: String with the complete path of the folder where the XAS files are (can be hdf, or txt, or both if they are all in the same folder).
+    :path2: String with the complete path of the folder where the XAS files are (if the first one was for the hdf files, then the second path must contain the txt files, or viceversa).
+    :filters1: A list of strings containing filter words to select the XAS filenames in path1.
+    :filters2: A list of strings containing filter words to select the XAS filenames in path2.
+    :recursive: default False. Set to True if you want to look in the folders recursively.
+    :return: Returns a pandas dataframe with the XAS filelist information.
+    '''
     if path2==None:
+        path1_hdf = path1+'/*.hdf'
+        path1_txt = path1+'/*.txt'
+        files_hdf = glob.glob(path1_hdf)
+        files_txt = glob.glob(path1_txt)
+        files_hdf = [f for f in files_hdf if all(word in f for word in filters1)]
+        files_txt = [f for f in files_hdf if all(word in f for word in filters1)]
+        if len(files_hdf)==len(files_txt):
+            hdf_df=getXASfilesdf_samba_hdf(path1,filters1,recursive)
+            txt_df=getXASfilesdf_samba_txt(path1,filters1,recursive)
+            merged_df=mergeXASdfs_samba(hdf_df,txt_df)
         try:
-            merged_df=getXASfilesdf_samba_hdf(path1,filters1)
+            merged_df=getXASfilesdf_samba_hdf(path1,filters1,recursive)
         except:
-            merged_df=getXASfilesdf_samba_txt(path1,filters1)
+            merged_df=getXASfilesdf_samba_txt(path1,filters1,recursive)
     else:
         try:
-            hdf_df=getXASfilesdf_samba_hdf(path1,filters1)
-            txt_df=getXASfilesdf_samba_txt(path2,filters2)
+            hdf_df=getXASfilesdf_samba_hdf(path1,filters1,recursive)
+            txt_df=getXASfilesdf_samba_txt(path2,filters2,recursive)
         except:
-            hdf_df=getXASfilesdf_samba_hdf(path2,filters2)
-            txt_df=getXASfilesdf_samba_txt(path1,filters1)
-        r = '({})'.format('|'.join(hdf_df['filename']))
-        first_merge = txt_df['filename'].str.extract(r, expand=False).fillna(txt_df['filename'])
-        #merged_df = hdf_df.merge(txt_df.drop('filename', 1), left_on='filename', right_on=first_merge, how='outer')
-        merged_df = txt_df.merge(hdf_df.rename(columns={"filename":'filename hdf'}), left_on=first_merge,
-                                 right_on='filename hdf', how='outer').drop(columns=['filename hdf'])
-        merged_df=merged_df.sort_values(by='average time', ignore_index=True)
+            hdf_df=getXASfilesdf_samba_hdf(path2,filters2,recursive)
+            txt_df=getXASfilesdf_samba_txt(path1,filters1,recursive)
+        merged_df=mergeXASdfs_samba(hdf_df,txt_df)
     return merged_df
 
 def getXASdf_samba_beta(hdf_path,txt_path):
@@ -558,7 +572,7 @@ def getSingleXASdict(filename):
 
 def getSingleXASdict_samba(filename):
     '''
-    Function to get a python dictionary with the information of a XAS file.
+    Function to get a python dictionary with the information of a XAS file (SAMBA beamline format).
     
     :filename: Complete path of the file.
     :return: Returns a python dictionary with the XAS file information (all columns).
@@ -596,10 +610,12 @@ def getSingleXASdict_samba(filename):
 
 def mergeEC_XASdfs(EC_df,XAS_files_df,which_col_EC='datetime',which_col_XAS='stop time'):
     '''
-    Function to merge electro and XAS files dataframes based on approximate datetime.
+    Function to merge electro and XAS-files dataframes based on datetime.
     
     :EC_df: Pandas dataframe with the data from the EC Lab file.
     :XAS_files_df: Pandas dataframe with the data from several XAS files.
+    :which_col_EC: Default set to 'datetime' column.
+    :which_col_XAS: Default set to 'stop time' column (start time + ellapsed time) but you can edit if necessary.
     :return: Returns a merged dataframe with both informations.
     '''
     # merge electro and XAS files dataframes based on approximate datetime
@@ -630,12 +646,8 @@ def mergeEC_XASdfs(EC_df,XAS_files_df,which_col_EC='datetime',which_col_XAS='sto
                               tolerance=pd.Timedelta('10 min'))
     # choose which columns to have in your text file
     cols_XAS = XAS_files_df.rename(columns=new_XAScols_dict).columns.tolist()
-    #cols_EC = [new_ECcols_dict[which_col_EC],'Ewe/V', '<I>/mA', 'x','Capacity/mA.h','half cycle','cycle number']
     cols_EC = [new_ECcols_dict[which_col_EC],'Ewe/V', '<I>/mA', 'Capacity/mA.h','half cycle','cycle number']
     cols = cols_XAS + cols_EC
-    #cols = ['filename','starttime XAS','elapsed time XAS/s','average time XAS','sample T (C)','datetime EC','Ewe/V', '<I>/mA', 'x','Capacity/mA.h','half cycle','cycle number']
-    #merged_df = merged_df[cols]
-    #merged_df.dropna(how='all', axis=0, subset=['Ewe/V','<I>/mA','x'], inplace=True)
     merged_df.dropna(how='all', axis=0, subset=['Ewe/V','<I>/mA'], inplace=True)
     merged_df.reset_index(drop=True, inplace=True)
     elapsed_col=next(col for col in merged_df.columns if 'elapsed' in col)
@@ -677,7 +689,6 @@ def mergeEC_XASdfs_beta(EC_df,XAS_files_df):
     cols_XAS = list(XAS_files_df.rename(columns={'datetime':'starttime XAS','elapsed time/s':'elapsed time XAS/s'}).columns)
     cols_EC = ['datetime EC','Ewe/V', '<I>/mA', 'x','Capacity/mA.h','half cycle','cycle number']
     cols = cols_XAS + cols_EC
-    #cols = ['filename','starttime XAS','elapsed time XAS/s','average time XAS','sample T (C)','datetime EC','Ewe/V', '<I>/mA', 'x','Capacity/mA.h','half cycle','cycle number']
     merged_df = merged_df[cols]
     merged_df.dropna(how='all', axis=0, subset=['Ewe/V','<I>/mA','x'], inplace=True)
     merged_df.reset_index(drop=True, inplace=True)
@@ -693,6 +704,7 @@ def mergeEC_XASdfs_beta(EC_df,XAS_files_df):
     print('Merged dataframe ready.')
     return merged_df
 
+# -------------------------------------------- extract data to txt files --------------------------------------------
 def simplified_output(merged_df,cols,output_name,extension):
     #merged_df.to_csv(output_name+extension, index=False, sep='\t')
     print(output_name+extension)
@@ -728,8 +740,19 @@ def simplified_output_beta(EC_filename,XAS_folder,output_name,EC_starttime=1):
     return
 #  ------------------------------------------------------- pre-treatment -------------------------------------------------------
 def interpol_energy(XAS_path,grid=None,output_prefix='int',extension='.txt'):
+    '''
+    Function to create a new set of XAS files with an interpolated energy grid. The new files will be located in a folder named 'interpolated' inside of the working folder.
+    
+    :XAS_path: String with the complete path of the folder where the XAS files are.
+    :grid: List containing the parameters of the desired energy grid. It should be defined as [energy,step,energy,step,energy...].
+    :output_prefix: Prefix of the output filenames. Default set to 'int'.
+    :extension: Output file extension. Default set to txt.
+    :return: Creates a set of new files with a new common energy grid.
+    '''
     XAS_df=getXASdf_samba(XAS_path)
     energy_col=get_energy_col(XAS_df)
+    if grid==None:
+        grid=[XAS_df[energy_col][0].min(),0.5,XAS_df[energy_col][0].max()]
     try:
         chunks = [grid[x:x+3] for x in range(0, len(grid)-1, 2)]
         decimals = max([abs(Decimal(str(x)).as_tuple().exponent) for x in grid])
@@ -787,9 +810,14 @@ def interpol_energy(XAS_path,grid=None,output_prefix='int',extension='.txt'):
     print('Interpolated files ready.')
     return
 
-
-# ---------------------------------------------------------- plotting ----------------------------------------------------------
+# ----------------------------------------------------- plotting pre treatment -----------------------------------------------------
 def check_cycles(df):
+    '''
+    Function to check if an electro dataframe has columns of the 'cycle number' and 'half cycle'. If not, it creates them based on the changes in the potential.
+    
+    :df: Input dataframe created from an EC Lab file source.
+    :return: Returns a merged dataframe with both informations.
+    '''
     if 'cycle number' not in df.columns:
         change_idx=df[np.sign(df['Ewe/V'].diff(2)).diff().ne(0)].index.to_list()
         change_idx=np.array(change_idx)
@@ -819,22 +847,23 @@ def check_cycles(df):
     return
 
 def convert_nb_cycle(df,nb_cycle):
-    try:
-        nb_cycle=int(nb_cycle)
-        if nb_cycle not in df['cycle number'].unique():
-            raise ValueError("Not a valid nb_cycle.")
-        else:
-            nb_cycle=[nb_cycle]
-    except ValueError: raise ValueError('Not a valid nb_cycle.')
-    except: pass
-        
-    if not nb_cycle:
+    if nb_cycle=='all':
         nb_cycle=df['cycle number'].unique()
-    elif not all(elem in df['cycle number'].unique() for elem in nb_cycle):
+    else:
+        try:
+            nb_cycle=int(nb_cycle)
+            if nb_cycle not in df['cycle number'].unique():
+                raise ValueError("Not a valid nb_cycle.")
+            else:
+                nb_cycle=[nb_cycle]
+        except ValueError: raise ValueError('Not a valid nb_cycle.')
+        except: pass
+        
+    if not all(elem in df['cycle number'].unique() for elem in nb_cycle):
         raise ValueError('The chosen cycle numbers are not in the sequence.')
     return nb_cycle
 
-########## EC data alone ##########
+# --------------------------------------------------- plotting EC data ---------------------------------------------------
 def plotUI_vs_time(electrodf,width=15,height=5):
     '''
     Function to plot a potential/current vs time graph.
@@ -857,16 +886,14 @@ def plotUI_vs_time(electrodf,width=15,height=5):
     else:
         timeSeries=electrodf['time/s']
     # plot V vs. time
-    #ax1.plot(timeSeries/3600,electrodf['Ewe/V'],color="blue")
     ax1.scatter(timeSeries/3600,electrodf['Ewe/V'],color="blue",s=0.2)
     # plot I vs. time
-    #ax2.plot(timeSeries/3600,electrodf['<I>/mA'],color="green")
     ax2.scatter(timeSeries/3600,electrodf['<I>/mA'],color="green",s=0.2)
     # set the labels and the colors of the curves
     ax1.set_xlabel("Time (h)",fontsize=14)
     ax1.set_ylabel("Potential vs. Li/Li$^+$ (V)",color="blue",fontsize=14)
     ax2.set_ylabel("Current (mA)",color="green",fontsize=14)
-    # let's also color the axes
+    # color the axes
     ax1.tick_params(axis='y',colors="blue")
     ax2.tick_params(axis='y',colors="green")
     ax2.spines['right'].set_color("green")
@@ -875,12 +902,12 @@ def plotUI_vs_time(electrodf,width=15,height=5):
     ax2.tick_params(axis='both', labelsize=13, direction='in')
     return fig
 
-def plotCapacity_vs_U(electrodf,nb_cycle=None,width=8,height=5,mass=1000):
+def plotCapacity_vs_U(electrodf,nb_cycle='all',width=8,height=5,mass=1000):
     '''
     Function to plot a capacity vs potential graph.
     
     :electrodf: Pandas dataframe with the data from the EC Lab file.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :width: Width of the graph.
     :height: Height of the graph.
     :mass: Mass of active material.
@@ -911,9 +938,7 @@ def plotCapacity_vs_U(electrodf,nb_cycle=None,width=8,height=5,mass=1000):
         subdf=newECdf[newECdf['half cycle']==half_cycle]
         cycle_number=int(subdf['cycle number'].mean())
         if cycle_number in nb_cycle:
-            #if (half_cycle % 2) == 0:
             if subdf['ox/red'].mode()[0]==1:
-                #ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_charge[int(np.floor(i/2))])
                 ax.scatter(subdf['Capacity/mA.h']/mass,subdf['Ewe/V'],s=0.2,color=color_charge[int(np.where(newECdf['cycle number'].unique()==cycle_number)[0])])
                 ax.annotate(str(int(cycle_number)), (subdf['Capacity/mA.h'].iloc[-1]/mass, subdf['Ewe/V'].iloc[-1]+0.01), color=color_charge[int(np.where(newECdf['cycle number'].unique()==cycle_number)[0])], va='bottom')
             else:
@@ -937,20 +962,20 @@ def plotCapacity_vs_U(electrodf,nb_cycle=None,width=8,height=5,mass=1000):
     ax.tick_params(axis='both', labelsize=13, direction='in')
     return fig
 
-def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colormap='plasma',width=10,height=6,dotsize=10,alpha=1, mass=1000):
+def plotdQdU_vs_U(electrodf,nb_cycle='all',reduce_by=1,boxcar=1,savgol=(1,0),colormap='plasma',width=10,height=6,dotsize=10,alpha=1, mass=1000):
     '''
     Function to plot a capacity vs potential graph.
     
     :electrodf: Pandas dataframe with the data from the EC Lab file.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :reduce_by: Factor by which you want to reduce the number of points on your dataframe.
     :boxcar: Factor indicating the size of the moving window of a moving average filter
-    :savgol: Tuple (x,y) with the parameters of the Savitzky-Golay filter that you want to apply.
-    :colormap: Name of the colormap you want to use for the plot.
+    :savgol: Tuple (x,y) with the parameters of a Savitzky-Golay filter.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
-    :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :dotsize: Size of the dot of the scatter plot. Defaul set to 10.
+    :alpha: Opacity of the points. Default set to 1.
     :mass: Mass of active material.
     :return: Plot.
     '''
@@ -1010,13 +1035,12 @@ def plotdQdU_vs_U(electrodf,nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colo
         leg = ax.legend(loc='upper left',prop={'size': 14},markerscale=2)
     return fig
 
-########## EC data + XAS data ##########
-
+# --------------------------------------------------- plotting EC XAS data ---------------------------------------------------
 def get_energy_col(df):
     '''
     Function to get the name of the energy column.
     
-    :df: Pandas dataframe with the merged data.
+    :df: Pandas dataframe with the merged or XAS data.
     :return: Name of the column
     '''
     np_arr_list=(df.applymap(type) == np.ndarray).all().index[(df.applymap(type) == np.ndarray).all()].tolist()
@@ -1025,19 +1049,38 @@ def get_energy_col(df):
             energy_col=col
     return energy_col
 
-def get_edge(df,intensity_val='inflection',intensity_col='normalized'):
+def get_intensity_col(df):
+    '''
+    Function to get the name of the energy column.
+    
+    :df: Pandas dataframe with the merged or XAS data.
+    :return: Name of the column
+    '''
+    np_arr_list=(df.applymap(type) == np.ndarray).all().index[(df.applymap(type) == np.ndarray).all()].tolist()
+    for col in df.columns:
+        if ('norm' in col.lower()) and (col in np_arr_list) and ('ref' not in col.lower()) or ('mux' in col.lower()):
+            intensity_col=col
+            break
+    return intensity_col
+
+def get_edge(df,intensity_val='inflection',intensity_col=''):
     '''
     Function to get the interpolated energy value at a certain intesity.
     
     :df: Pandas dataframe with the XAS spectra data.
-    :intensity: Intensity value to get the edge energy value.
+    :intensity: Intensity value to get the edge energy value. Default is the inflection point.
     :return: List of energy values.
     '''
     indexes=[]
     edge_energy=[]
     energy_col=get_energy_col(df)
-    if intensity_col not in df.columns:
-        intensity_col='mux'
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     for index, row in df.iterrows():
         E_fine = np.linspace(min(row[energy_col]),max(row[energy_col]), 100000)
         interpol = interp1d(row[energy_col], row[intensity_col])
@@ -1054,19 +1097,74 @@ def get_edge(df,intensity_val='inflection',intensity_col='normalized'):
         edge_df=pd.Series(data=edge_energy,index=indexes)
     return edge_df
 
-def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',width=10,height=6,
-                    guideline=False):
+def plotAllXAS(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='viridis',width=7,height=4):
+    edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    energy_col=get_energy_col(df)
+    rang=[edge.mean()-20,edge.mean()+40]
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
+    # colors
+    cm=plt.get_cmap(colormap)
+    norm = Normalize(vmin=df.index[0], vmax=df.index[-1])
+    # bulid the plot
+    fig, ax = plt.subplots(figsize=(width,height))
+    for index, row in df.iterrows():
+        ax.plot(row[energy_col],row[intensity_col],color=cm(norm(index)))
+    ax.set_xlim(rang[0],rang[1])
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    ax.set_xlabel('Energy (eV)',fontsize=14)
+    ax.set_ylabel('Normalized intensity',fontsize=14)
+    # put a legend
+    sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(colormap), norm=norm)
+    cbar = fig.colorbar(sm)
+    cbar.set_label('Spectrum #', rotation=270, labelpad=15, fontsize=14)
+    cbar.ax.tick_params(labelsize=13)
+    return fig
+
+def plotEshift_vs_U(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',option=1,
+                    colormap='plasma',width=7,height=4,dotsize=30,alpha=0.8,guideline=False):
     '''
     Function to plot edge shift vs potential graph.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
-    :edge_intensity: Intensity value to get the edge energy value.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value. Default is the inflection point.
+    :intensity_col: Name of the column with the intensity values.
+    :option: Parameter to choose the style of the graph. Default set to 1, meaning the figure will have a simplified color code with charge subcycles in red, discharge subcycles in blue, and different markerstyles for each cycle. If set to 2, the figure will have a different color for each cycle (according to a chosen colormap). If set to 3, x axis will be extended (1 sub-figure for each cycle).
+    :colormap: Chosen colormap if option set to 2. Default set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
-    :intensity_col: Name of the column with the normalized intensity values.
+    :dotsize: Size of the dot of the scatter plot (option 2).
+    :alpha: Opacity of the points (option 2).
     :return: Plot.
     '''
+    if option==1:
+        fig=plotEshift_vs_U_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,width,height,guideline)
+    elif option==2:
+        fig=plotEshift_vs_U_beta(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,dotsize,alpha,guideline)
+    else:
+        fig=plotEshift_vs_U_long(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,guideline=guideline)
+    return fig
+
+def plotEshift_vs_U_alpha(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',width=10,height=6,
+                          guideline=False):
+    '''
+    Function to plot edge shift vs potential graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :return: Plot.
+    '''
+    
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     newECdf=merged_df.copy(deep=True)
     check_cycles(newECdf)
@@ -1080,9 +1178,10 @@ def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
     fig, ax = plt.subplots(figsize=(width,height))
     # plot Edge shift
     condition = newECdf['cycle number'].isin(nb_cycle)
-    counter=1
+    counter=0
     if guideline:
-        ax.plot(newECdf[condition]['Ewe/V'],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+        ax.plot(newECdf[condition]['Ewe/V'],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=counter)
+        counter+=1
     for i, cycle in enumerate(newECdf['cycle number'].unique()):
         if cycle in nb_cycle:
             subdf=newECdf[newECdf['cycle number']==cycle]
@@ -1121,29 +1220,24 @@ def plotEshift_vs_U(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
     ax.tick_params(which="minor", axis="x", direction="in")
     ax.tick_params(which="minor", axis="y", color='w', direction="in")
     
-    # put a legend
-    
-    # Shrink current axis by 20%
-    #box = ax.get_position()
-    #ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
-
     # Put a legend to the right of the current axis
     leg = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 12})
     return fig
 
-def plotEshift_vs_U_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
-                    width=10,height=6,dotsize=10,alpha=0.5):
+def plotEshift_vs_U_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
+                         width=7,height=4,dotsize=30,alpha=0.8,guideline=False):
     '''
     Function to plot edge shift vs potential graph.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -1151,23 +1245,18 @@ def plotEshift_vs_U_beta(merged_df,nb_cycle=None,edge_intensity='inflection',int
     check_cycles(newECdf)
     nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
 
-    #cm=plt.get_cmap(colormap)
-    # color map from the total number of cycles in the DF, not from the length of the input nb_cycles
-    #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
-    
     # normalize the colormap with respect to the total number of cycles in the df
     norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
     # build plot
     fig, ax = plt.subplots(figsize=(width,height))
-
-    #for i, cycle in enumerate(merged_df['cycle number'].unique()):
-        #if cycle in nb_cycle:
-            #subdf=merged_df[merged_df['cycle number']==cycle]
-            #ax.scatter(subdf['Ewe/V'],subdf[Eshift_col_name],s=dotsize,color=color_dqdv[i],label='cycle '+str(int(cycle)),alpha=alpha)
     
     condition = newECdf['cycle number'].isin(nb_cycle)
     # plot Edge shift
-    scatter = ax.scatter(newECdf['Ewe/V'][condition],edge[condition],s=dotsize,c=newECdf['cycle number'][condition], cmap=colormap, norm=norm,alpha=alpha)
+    counter=0
+    if guideline:
+        ax.plot(newECdf[condition]['Ewe/V'],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=counter)
+        counter+=1
+    scatter = ax.scatter(newECdf['Ewe/V'][condition],edge[condition],s=dotsize,c=newECdf['cycle number'][condition], cmap=colormap, norm=norm,alpha=alpha,zorder=counter)
     
     # axes labels and limits
     margin=0.05
@@ -1198,17 +1287,682 @@ def plotEshift_vs_U_beta(merged_df,nb_cycle=None,edge_intensity='inflection',int
         leg = ax.legend(handles=scatter.legend_elements()[0], labels=['cycle '+str(int(i)) for i in nb_cycle], prop={'size': 12})
     return fig
 
-def plotEshift_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',width=10,height=6,
-                    guideline=False):
+def plotEshift_vs_U_long(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
+                         colormap='plasma',width=15,height=4,linewidth=1.5,dotsize=18,alpha=0.5,top=0.04,guideline=True):
+    '''
+    Function to plot edge shift vs potential.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+
+    #colormap according to total number of cycles
+    cm=plt.get_cmap(colormap)
+    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
+    
+    fig = plt.figure(constrained_layout=True)
+    fig.set_size_inches(width, height)
+
+    half_cycles = []
+    maxs = []
+    mins = []
+    widths = []
+    mode = []
+    for index, row in newECdf.groupby('half cycle').agg({'Ewe/V': ['min', 'max'], 'ox/red':['mean']}).iterrows():
+        width=row[1]-row[0]
+        if width !=0:
+            half_cycles.append(index)
+            mins.append(row[0])
+            maxs.append(row[1])
+            widths.append(width)
+            mode.append(round(row[2]))
+
+    gs_top = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths,top=0.95)
+
+    # PLOTTING THE EDGE EVOLUTION
+    art_idx=0
+    for col in range(len(half_cycles)):
+        condition=newECdf['half cycle']==half_cycles[col]
+        index_cm=col//2
+        ax0 = fig.add_subplot(gs_top[0,col])
+        if guideline:
+            ax0.plot(newECdf[condition]['Ewe/V'],edge[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],
+                     alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax0.scatter(newECdf[condition]['Ewe/V'],edge[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],
+                    label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
+        art_idx=art_idx+len(newECdf[condition]['Ewe/V'])
+        # x ticks locator
+        xticks = ticker.MaxNLocator(round(widths[col]/0.25))
+        ax0.xaxis.set_major_locator(xticks)
+        ax0.tick_params(axis='both', labelsize=13)
+        ax0.set_xlim(mins[col],maxs[col])
+        ax0.set_ylim(edge.min(),edge.max())
+        if mode[col]==0:
+            ax0.invert_xaxis()
+        if col!=0:
+            ax0.get_yaxis().set_visible(False)
+            ax0.spines['left'].set_linestyle("dashed")
+            ax0.spines['left'].set_capstyle("butt")
+        else:
+            ax0.set_ylabel("Edge @ J="+str(edge_intensity)+" (eV)", fontsize=15, labelpad=10)
+
+    gs_base = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths, top=top,bottom=top-0.01)
+    # X AXIS LABEL
+    ax2 = fig.add_subplot(gs_base[0,:])
+    ax2.get_xaxis().set_ticks([])
+    ax2.get_yaxis().set_ticks([])
+    for axis in ['top','bottom','left','right']:
+        ax2.spines[axis].set_color('white')
+    ax2.set_xlabel("Potential vs. Li/Li$^+$ (V)", fontsize=15)
+    plt.subplots_adjust(wspace=0)
+    return fig
+
+def plotEshift_vs_x(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',option=1,
+                    colormap='plasma',width=7,height=4,dotsize=30,alpha=0.8,guideline=False):
+    '''
+    Function to plot edge shift vs x graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value. Default is the inflection point.
+    :intensity_col: Name of the column with the intensity values.
+    :option: Parameter to choose the style of the graph. Default set to 1, meaning the figure will have a simplified color code with charge subcycles in red, discharge subcycles in blue, and different markerstyles for each cycle. If set to 2, the figure will have a different color for each cycle (according to a chosen colormap). If set to 3, x axis will be extended (1 sub-figure for each cycle).
+    :colormap: Chosen colormap if option set to 2. Default set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :return: Plot.
+    '''
+    if option==1:
+        fig=plotEshift_vs_x_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,width,height,guideline)
+    elif option==2:
+        fig=plotEshift_vs_x_beta(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,dotsize,alpha,guideline)
+    else:
+        fig=plotEshift_vs_x_long(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,guideline=guideline)
+    return fig
+
+def plotEshift_vs_x_alpha(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',width=10,height=6,
+                          guideline=False):
+    '''
+    Function to plot edge shift vs x graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    fillstyle=['full','none']
+    markers = itertools.cycle(('o','o','v','v','X','X','*','*')) 
+    colors = ['r','b']
+
+
+    fig, ax = plt.subplots(figsize=(width,height))
+    # plot Edge shift
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    counter=0
+    try:
+        if 'calculated x' in newECdf.columns:
+            x_col='calculated x'
+        else:
+            x_col='x'
+    except: raise ValueError('x not found in the dataframe columns.')
+        
+    if guideline:
+        ax.plot(newECdf[condition][x_col],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=counter)
+        counter+=1
+    for i, cycle in enumerate(newECdf['cycle number'].unique()):
+        if cycle in nb_cycle:
+            subdf=newECdf[newECdf['cycle number']==cycle]
+            marker=next(markers)
+            for j, subcycle in enumerate(subdf['half cycle'].unique()):
+                if subdf[subdf['half cycle']==subcycle]['ox/red'].mode()[0]==1:
+                    subcycle_type='charge'
+                    color=colors[0]
+                else:
+                    subcycle_type='discharge'
+                    color=colors[1]
+                if guideline:
+                    ax.plot(subdf[subdf['half cycle']==subcycle][x_col],edge[subdf[subdf['half cycle']==subcycle].index],
+                            alpha=0.3,linewidth=1.5,color=color,zorder=counter)
+                    counter+=1
+                ax.plot(subdf[subdf['half cycle']==subcycle][x_col],edge[subdf[subdf['half cycle']==subcycle].index],
+                        marker=marker, fillstyle=fillstyle[i%2],color=color,lw=0,
+                        label='cycle '+str(int(cycle))+' '+subcycle_type,zorder=counter)
+                counter+=1
+    # axes labels and limits
+    margin=0.05
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    # x
+    xmin=newECdf[x_col].min()-(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    xmax=newECdf[x_col].max()+(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    ax.set_xlim(xmin,xmax)
+    ax.set_xlabel("x",fontsize=14)
+    # y
+    ymin=edge.min()-(edge.max()-edge.min())*margin/(1-margin*2)
+    ymax=edge.max()+(edge.max()-edge.min())*margin/(1-margin*2)
+    ax.set_ylim(ymin,ymax)
+    label_y='Edge @ J='+str(edge_intensity)+' (eV)'
+    ax.set_ylabel(label_y,fontsize=14)
+
+    ax.minorticks_on()
+    ax.tick_params(which="minor", axis="x", direction="in")
+    ax.tick_params(which="minor", axis="y", color='w', direction="in")
+    
+    # put a legend
+    
+    # Shrink current axis by 20%
+    #box = ax.get_position()
+    #ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+    # Put a legend to the right of the current axis
+    leg = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 12})
+    return fig
+
+def plotEshift_vs_x_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
+                         width=10,height=6,dotsize=30,alpha=0.8,guideline=False):
+    '''
+    Function to plot edge shift vs x graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+
+    #cm=plt.get_cmap(colormap)
+    # color map from the total number of cycles in the DF, not from the length of the input nb_cycles
+    #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
+    
+    # normalize the colormap with respect to the total number of cycles in the df
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
+    # build plot
+    fig, ax = plt.subplots(figsize=(width,height))
+
+    #for i, cycle in enumerate(merged_df['cycle number'].unique()):
+        #if cycle in nb_cycle:
+            #subdf=merged_df[merged_df['cycle number']==cycle]
+            #ax.scatter(subdf['Ewe/V'],subdf[Eshift_col_name],s=dotsize,color=color_dqdv[i],label='cycle '+str(int(cycle)),alpha=alpha)
+    
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    # plot Edge shift
+    counter=0
+    try:
+        if 'calculated x' in newECdf.columns:
+            x_col='calculated x'
+        else:
+            x_col='x'
+    except: raise ValueError('x not found in the dataframe columns.')
+    
+    if guideline:
+        ax.plot(newECdf[condition][x_col],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=counter)
+        counter+=1
+    scatter = ax.scatter(newECdf[x_col][condition],edge[condition],s=dotsize,c=newECdf['cycle number'][condition], cmap=colormap, norm=norm,alpha=alpha,zorder=counter)
+    
+    # axes labels and limits
+    margin=0.05
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    # x
+    xmin=newECdf[x_col].min()-(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    xmax=newECdf[x_col].max()+(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    ax.set_xlim(xmin,xmax)
+    ax.set_xlabel("x",fontsize=14)
+    # y
+    ymin=edge.min()-(edge.max()-edge.min())*margin/(1-margin*2)
+    ymax=edge.max()+(edge.max()-edge.min())*margin/(1-margin*2)
+    ax.set_ylim(ymin,ymax)
+    label_y='Edge @ J='+str(edge_intensity)+' (eV)'
+    ax.set_ylabel(label_y,fontsize=14)
+
+    ax.minorticks_on()
+    ax.tick_params(which="minor", axis="x", direction="in")
+    ax.tick_params(which="minor", axis="y", color='w', direction="in")
+    
+    # put a legend
+    sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(colormap), norm=norm)
+    if len(nb_cycle)>5:
+        cbar = fig.colorbar(sm)
+        cbar.set_label('Cycle', rotation=270, labelpad=10, fontsize=14)
+    else:
+        #leg = ax.legend(loc='upper left',prop={'size': 13})
+        leg = ax.legend(handles=scatter.legend_elements()[0], labels=['cycle '+str(int(i)) for i in nb_cycle], prop={'size': 12})
+    return fig
+
+def plotEshift_vs_x_long(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
+                         colormap='plasma',width=15,height=4,linewidth=1.5,dotsize=18,alpha=0.5,top=0.04,guideline=True):
+    '''
+    Function to plot edge shift vs x.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    try:
+        if 'calculated x' in newECdf.columns:
+            x_col='calculated x'
+        else:
+            x_col='x'
+    except: raise ValueError('x not found in the dataframe columns.')
+        
+    #colormap according to total number of cycles
+    cm=plt.get_cmap(colormap)
+    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
+    
+    fig = plt.figure(constrained_layout=True)
+    fig.set_size_inches(width, height)
+
+    half_cycles = []
+    maxs = []
+    mins = []
+    widths = []
+    mode = []
+    for index, row in newECdf.groupby('half cycle').agg({x_col: ['min', 'max'], 'ox/red':['mean']}).iterrows():
+        width=row[1]-row[0]
+        if width !=0:
+            half_cycles.append(index)
+            mins.append(row[0])
+            maxs.append(row[1])
+            widths.append(width)
+            mode.append(round(row[2]))
+
+    gs_top = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths, top=0.95)
+
+    # PLOTTING THE EDGE EVOLUTION
+    art_idx=0
+    for col in range(len(half_cycles)):
+        condition=newECdf['half cycle']==half_cycles[col]
+        index_cm=col//2
+        ax0 = fig.add_subplot(gs_top[0,col])
+        if guideline:
+            ax0.plot(newECdf[condition][x_col],edge[art_idx:art_idx+len(newECdf[condition][x_col])],
+                     alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax0.scatter(newECdf[condition][x_col],edge[art_idx:art_idx+len(newECdf[condition][x_col])],
+                    label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
+        art_idx=art_idx+len(newECdf[condition][x_col])
+        # x tick locator
+        xticks = ticker.MaxNLocator(round(widths[col]/0.25))
+        ax0.xaxis.set_major_locator(xticks)
+        ax0.tick_params(axis='both', labelsize=13)
+        ax0.set_xlim(mins[col],maxs[col])
+        ax0.set_ylim(edge.min(),edge.max())
+        
+        if mode[col]!=0:
+            ax0.invert_xaxis()
+                
+        if col!=0:
+            ax0.get_yaxis().set_visible(False)
+            ax0.spines['left'].set_linestyle("dashed")
+            ax0.spines['left'].set_capstyle("butt")
+        else:
+            ax0.set_ylabel("Edge @ J="+str(edge_intensity)+" (eV)", fontsize=15, labelpad=10)
+
+    gs_base = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths, top=top,bottom=top-0.01)
+    # X AXIS LABEL
+    ax2 = fig.add_subplot(gs_base[0,:])
+    ax2.get_xaxis().set_ticks([])
+    ax2.get_yaxis().set_ticks([])
+    for axis in ['top','bottom','left','right']:
+        ax2.spines[axis].set_color('white')
+    ax2.set_xlabel("x", fontsize=15)
+    plt.subplots_adjust(wspace=0)
+    return fig
+
+def plotx_vs_x(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',x_col='x',option=1,
+               colormap='plasma',width=7,height=4,dotsize=30,alpha=0.8,guideline=False):
+    '''
+    Function to plot edge shift vs x graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value. Default is the inflection point.
+    :intensity_col: Name of the column with the intensity values.
+    :option: Parameter to choose the style of the graph. Default set to 1, meaning the figure will have a simplified color code with charge subcycles in red, discharge subcycles in blue, and different markerstyles for each cycle. If set to 2, the figure will have a different color for each cycle (according to a chosen colormap). If set to 3, x axis will be extended (1 sub-figure for each cycle).
+    :colormap: Chosen colormap if option set to 2. Default set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :return: Plot.
+    '''
+    if option==1:
+        fig=plotx_vs_x_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,x_col,width,height,guideline)
+    elif option==2:
+        fig=plotx_vs_x_beta(merged_df,nb_cycle,edge_intensity,intensity_col,x_col,colormap,width,height,dotsize,alpha,guideline)
+    else:
+        fig=plotx_vs_x_long(merged_df,nb_cycle,edge_intensity,intensity_col,x_col,colormap,width,height,dotsize,alpha,
+                            guideline=guideline)
+    return fig
+
+def plotx_vs_x_alpha(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',x_col='x',width=10,height=6,
+                     guideline=False):
+    '''
+    Function to plot x caculated from edge shift vs x.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :x_col: Name of the column with x.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    newECdf['x from edge']=1-(edge-edge.min())/(edge.max()-edge.min())
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    fillstyle=['full','none']
+    markers = itertools.cycle(('o','o','v','v','X','X','*','*')) 
+    colors = ['r','b']
+
+
+    fig, ax = plt.subplots(figsize=(width,height))
+    # plot Edge shift
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    counter=0
+    try:
+        if 'calculated x' in newECdf.columns:
+            x_col='calculated x'
+        else:
+            x_col='x'
+    except: raise ValueError('x not found in the dataframe columns.')
+    
+    ax.plot([0,1],[0,1],color='black')
+    if guideline:
+        ax.plot(newECdf[condition][x_col],newECdf[condition]['x from edge'],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=counter)
+        counter+=1
+    for i, cycle in enumerate(newECdf['cycle number'].unique()):
+        if cycle in nb_cycle:
+            subdf=newECdf[newECdf['cycle number']==cycle]
+            marker=next(markers)
+            for j, subcycle in enumerate(subdf['half cycle'].unique()):
+                if subdf[subdf['half cycle']==subcycle]['ox/red'].mode()[0]==1:
+                    subcycle_type='charge'
+                    color=colors[0]
+                else:
+                    subcycle_type='discharge'
+                    color=colors[1]
+                if guideline:
+                    ax.plot(subdf[subdf['half cycle']==subcycle][x_col],subdf[subdf['half cycle']==subcycle]['x from edge'],
+                            alpha=0.3,linewidth=1.5,color=color,zorder=counter)
+                    counter+=1
+                ax.plot(subdf[subdf['half cycle']==subcycle][x_col],subdf[subdf['half cycle']==subcycle]['x from edge'],
+                        marker=marker, fillstyle=fillstyle[i%2],color=color,lw=0,
+                        label='cycle '+str(int(cycle))+' '+subcycle_type,zorder=counter)
+                counter+=1
+    # axes labels and limits
+    margin=0.05
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    # x
+    xmin=newECdf[x_col].min()-(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    xmax=newECdf[x_col].max()+(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    ax.set_xlim(xmin,xmax)
+    ax.set_xlabel("x",fontsize=14)
+    # y
+    ymin=newECdf['x from edge'].min()-(newECdf['x from edge'].max()-newECdf['x from edge'].min())*margin/(1-margin*2)
+    ymax=newECdf['x from edge'].max()+(newECdf['x from edge'].max()-newECdf['x from edge'].min())*margin/(1-margin*2)
+    ax.set_ylim(ymin,ymax)
+    label_y='x from edge @ J='+str(edge_intensity)+' (eV)'
+    ax.set_ylabel(label_y,fontsize=14)
+
+    ax.minorticks_on()
+    ax.tick_params(which="minor", axis="x", direction="in")
+    ax.tick_params(which="minor", axis="y", color='w', direction="in")
+    
+    # put a legend
+    
+    # Shrink current axis by 20%
+    #box = ax.get_position()
+    #ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+    # Put a legend to the right of the current axis
+    leg = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 12})
+    return fig
+
+def plotx_vs_x_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',x_col='x',colormap='plasma',
+                    width=10,height=6,dotsize=30,alpha=0.8,guideline=False):
+    '''
+    Function to plot edge shift vs x graph.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :x_col: Name of the column with the x values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    newECdf['x from edge']=1-(edge-edge.min())/(edge.max()-edge.min())
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    # normalize the colormap with respect to the total number of cycles in the df
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
+    # build plot
+    fig, ax = plt.subplots(figsize=(width,height))
+    
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    # plot Edge shift
+    counter=0
+    try:
+        if 'calculated x' in newECdf.columns:
+            x_col='calculated x'
+        else:
+            x_col='x'
+    except: raise ValueError('x not found in the dataframe columns.')
+    
+    if guideline:
+        ax.plot(newECdf[condition][x_col],newECdf[condition]['x from edge'],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=counter)
+        counter+=1
+    scatter = ax.scatter(newECdf[x_col][condition],newECdf[condition]['x from edge'],s=dotsize,c=newECdf['cycle number'][condition], cmap=colormap, norm=norm,alpha=alpha,zorder=counter)
+    ax.plot([0,1],[0,1],color='black')
+    
+    # axes labels and limits
+    margin=0.05
+    ax.tick_params(axis='both', labelsize=13, direction='in')
+    # x
+    xmin=newECdf[x_col].min()-(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    xmax=newECdf[x_col].max()+(newECdf[x_col].max()-newECdf[x_col].min())*margin/(1-margin*2)
+    ax.set_xlim(xmin,xmax)
+    ax.set_xlabel("x",fontsize=14)
+    # y
+    ymin=newECdf['x from edge'].min()-(newECdf['x from edge'].max()-newECdf['x from edge'].min())*margin/(1-margin*2)
+    ymax=newECdf['x from edge'].max()+(newECdf['x from edge'].max()-newECdf['x from edge'].min())*margin/(1-margin*2)
+    ax.set_ylim(ymin,ymax)
+    label_y='x from edge @ J='+str(edge_intensity)+' (eV)'
+    ax.set_ylabel(label_y,fontsize=14)
+
+    ax.minorticks_on()
+    ax.tick_params(which="minor", axis="x", direction="in")
+    ax.tick_params(which="minor", axis="y", color='w', direction="in")
+    
+    # put a legend
+    sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(colormap), norm=norm)
+    if len(nb_cycle)>5:
+        cbar = fig.colorbar(sm)
+        cbar.set_label('Cycle', rotation=270, labelpad=10, fontsize=14)
+    else:
+        #leg = ax.legend(loc='upper left',prop={'size': 13})
+        leg = ax.legend(handles=scatter.legend_elements()[0], labels=['cycle '+str(int(i)) for i in nb_cycle], prop={'size': 12})
+    return fig
+
+def plotx_vs_x_long(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',x_col='x',
+                    colormap='plasma',width=15,height=4,dotsize=18,alpha=0.5,top=0.04,guideline=True,linewidth=1.5):
+    '''
+    Function to plot edge shift vs x.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    newECdf['x from edge']=1-(edge-edge.min())/(edge.max()-edge.min())
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    try:
+        if 'calculated x' in newECdf.columns:
+            x_col='calculated x'
+        else:
+            x_col='x'
+    except: raise ValueError('x not found in the dataframe columns.')
+        
+    #colormap according to total number of cycles
+    cm=plt.get_cmap(colormap)
+    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
+    
+    fig = plt.figure(constrained_layout=True)
+    fig.set_size_inches(width, height)
+
+    half_cycles = []
+    maxs = []
+    mins = []
+    widths = []
+    mode = []
+    for index, row in newECdf.groupby('half cycle').agg({x_col: ['min', 'max'], 'ox/red':['mean']}).iterrows():
+        width=row[1]-row[0]
+        if width !=0:
+            half_cycles.append(index)
+            mins.append(row[0])
+            maxs.append(row[1])
+            widths.append(width)
+            mode.append(round(row[2]))
+
+    gs_top = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths, top=0.95)
+
+    # PLOTTING THE X FROM EDGE EVOLUTION
+    for col in range(len(half_cycles)):
+        condition=newECdf['half cycle']==half_cycles[col]
+        index_cm=col//2
+        ax0 = fig.add_subplot(gs_top[0,col])
+        if guideline:
+            ax0.plot(newECdf[condition][x_col],newECdf[condition]['x from edge'],
+                     alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax0.scatter(newECdf[condition][x_col],newECdf[condition]['x from edge'],
+                    label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
+        ax0.plot([0,1],[0,1],color='black')
+        # x tick locator
+        xticks = ticker.MaxNLocator(round(widths[col]/0.25))
+        ax0.xaxis.set_major_locator(xticks)
+        ax0.tick_params(axis='both', labelsize=13)
+        ax0.set_xlim(mins[col],maxs[col])
+        ax0.set_ylim(newECdf[condition]['x from edge'].min(),newECdf[condition]['x from edge'].max())
+        
+        if mode[col]!=0:
+            ax0.invert_xaxis()
+                
+        if col!=0:
+            ax0.get_yaxis().set_visible(False)
+            ax0.spines['left'].set_linestyle("dashed")
+            ax0.spines['left'].set_capstyle("butt")
+        else:
+            ax0.set_ylabel("x from edge @ J="+str(edge_intensity)+" (eV)", fontsize=15, labelpad=10)
+
+    gs_base = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths, top=top,bottom=top-0.01)
+    # X AXIS LABEL
+    ax2 = fig.add_subplot(gs_base[0,:])
+    ax2.get_xaxis().set_ticks([])
+    ax2.get_yaxis().set_ticks([])
+    for axis in ['top','bottom','left','right']:
+        ax2.spines[axis].set_color('white')
+    ax2.set_xlabel("x", fontsize=15)
+    plt.subplots_adjust(wspace=0)
+    return fig
+
+def plotEshift_vs_t(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',width=10,height=4,
+                    colormap='plasma',option=1,dotsize=10,alpha=0.5,guideline=False):
     '''
     Function to plot edge shift vs time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
-    :edge_intensity: Intensity value to get the edge energy value.
-    :intensity_col: Name of the column with the normalized intensity values.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value. Default set to inflection point.
+    :intensity_col: Name of the column with the intensity values.
     :width: Width of the graph.
     :height: Height of the graph.
+    :option: Parameter to choose the style of the graph. Default set to 1, meaning the figure will have a simplified color code with charge subcycles in red, discharge subcycles in blue, and different markerstyles for each cycle. If set to 2, the figure will have a different color for each cycle (according to a chosen colormap).
+    :colormap: Chosen colormap if option set to 2. Default set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    if option==1:
+        fig=plotEshift_vs_t_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,width,height,guideline)
+    else:
+        fig=plotEshift_vs_t_beta(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,dotsize,alpha,guideline)
+    return fig
+    
+def plotEshift_vs_t_alpha(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',width=10,height=6,
+                          guideline=False):
+    '''
+    Function to plot edge shift vs time.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :guideline: If True adds a grey line connecting the scattered points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -1285,19 +2039,20 @@ def plotEshift_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensit
     leg = ax.legend(loc='center left', bbox_to_anchor=(1.1, 0.5), prop={'size': 12})
     return fig
 
-def plotEshift_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
-                         width=10,height=6,dotsize=10,alpha=0.5):
+def plotEshift_vs_t_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
+                         width=10,height=6,dotsize=10,alpha=0.5,guideline=False):
     '''
     Function to plot edge shift vs time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -1322,6 +2077,10 @@ def plotEshift_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',int
     
     # plot potential over time
     ax1 = ax.twinx()
+    if guideline:
+        ax.plot(newECdf[condition]['absolute time/h'],edge[condition],alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
+        ax1.plot(newECdf[condition]['absolute time/h'],newECdf['Ewe/V'][condition],
+                 alpha=0.8,linewidth=1.5,color='lightgrey',zorder=0)
     ax1.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=6, marker="_")
     # axes parameters
     ax.tick_params(axis='both', labelsize=13, direction='in')
@@ -1359,19 +2118,20 @@ def plotEshift_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',int
     #ax.legend(handles=scatter.legend_elements()[0], title="Edge shift", ncol = 3, title_fontsize=12, labelspacing=0.05)
     return fig
 
-def plotdEshiftdt_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
+def plotdEshiftdt_vs_t(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
                        width=10,height=6,dotsize=10,alpha=0.5):
     '''
     Function to plot edge shift vs time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -1433,20 +2193,42 @@ def plotdEshiftdt_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',inten
         #leg = ax.legend(handles=scatter.legend_elements()[0], labels=['cycle '+str(int(i)) for i in nb_cycle], prop={'size': 12})
     #ax.legend(handles=scatter.legend_elements()[0], title="Edge shift", ncol = 3, title_fontsize=12, labelspacing=0.05)
     return fig
-
-def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',width=10,height=6,
-                            dotsize=10,guideline=False):
+def plotEshift_vs_t_stacked(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
+                            width=10,height=6,dotsize=10,option=1,guideline=False):
     '''
     Function to plot edge shift vs time.
     
-    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :merged_df: Pandas dataframe with the merged data from the EC Lab file + the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Chosen colormap if option set to 2. Default set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :option: Parameter to choose the style of the graph. Default set to 1, meaning the figure will have a simplified color code with charge subcycles in red, discharge subcycles in blue, and different markerstyles for each cycle. If set to 2, the figure will have a different color for each cycle (according to a chosen colormap).
+    :guideline: If True adds a grey line connecting the scattered points.
+    :return: Plot.
+    '''
+    if option==1:
+        fig=plotEshift_vs_t_stacked_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,width,height,dotsize,guideline)
+    else:
+        fig=plotEshift_vs_t_stacked_beta(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,dotsize,guideline)
+    return fig
+
+def plotEshift_vs_t_stacked_alpha(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',width=10,height=6,
+                                  dotsize=10,guideline=False):
+    '''
+    Function to plot edge shift vs time.
+    
+    :merged_df: Pandas dataframe with the merged data from the EC Lab file + the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :guideline: If True adds a grey line connecting the scattered points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -1534,19 +2316,20 @@ def plotEshift_vs_t_stacked(merged_df,nb_cycle=None,edge_intensity='inflection',
     leg = ax1.legend(loc='center left', bbox_to_anchor=(1, 0.2), prop={'size': 12})
     return fig
 
-def plotEshift_vs_t_stacked_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='plasma',
-                            width=10,height=6,dotsize=10,alpha=0.5):
+def plotEshift_vs_t_stacked_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
+                                 width=10,height=6,dotsize=10,alpha=0.5):
     '''
     Function to plot edge shift vs time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -1609,15 +2392,16 @@ def plotEshift_vs_t_stacked_beta(merged_df,nb_cycle=None,edge_intensity='inflect
 #### FOR THE MOMENT THESE ONLY WORK FOR DATAFRAMES WITH NORMALISED XAS FILES
 
 ## NEEDS LAST VERSION OF MATPLOTLIB
-def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='viridis',
+def plotAbsorptionDiff_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='viridis',
                             width=12,height=6,plot_range=None):
     '''
     Function to plot the differential absorption intensity vs energy.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'viridis'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
@@ -1699,15 +2483,16 @@ def plotAbsorptionDiff_beta(merged_df,nb_cycle=None,edge_intensity='inflection',
     return fig
 
 ## NEEDS LAST VERSION OF MATPLOTLIB
-def plotAbsorptionDiff(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',colormap='viridis',
+def plotAbsorptionDiff(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='viridis',
                        width=12,height=5,plot_range=None):
     '''
     Function to plot the differential absorption intensity vs energy.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'viridis'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
@@ -1798,16 +2583,17 @@ def plotAbsorptionDiff(merged_df,nb_cycle=None,edge_intensity='inflection',inten
     fig.supylabel('Absorption difference (pristine as ref)', fontsize=16)
     return fig
 
-def plotAbsorptionDerivative_beta(merged_df,nb_cycle=0,edge_intensity='inflection',intensity_col='normalized',
+def plotAbsorptionDerivative_beta(merged_df,nb_cycle=0,edge_intensity='inflection',intensity_col='',
                                   deriv=1,colormap='viridis',width=12,height=6,plot_range=None):
     '''
     Function to plot the derivated absorption intensity vs energy.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
     :deriv: Order of derivative to plot.
-    :colormap: Name of the colormap you want to use for the plot.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'viridis'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
@@ -1897,15 +2683,16 @@ def plotAbsorptionDerivative_beta(merged_df,nb_cycle=0,edge_intensity='inflectio
     fig.suptitle('Cycle '+str(nb_cycle), fontsize=16)
     return fig
 
-def plotAbsorptionDerivative(merged_df,nb_cycle=0,edge_intensity='inflection',intensity_col='normalized',
+def plotAbsorptionDerivative(merged_df,nb_cycle=0,edge_intensity='inflection',intensity_col='',
                              deriv=1,colormap='viridis',width=12,height=6,plot_range=None):
     '''
     Function to plot the differential absorption intensity vs energy.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'viridis'. You can check additional options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
@@ -1995,20 +2782,21 @@ def plotAbsorptionDerivative(merged_df,nb_cycle=0,edge_intensity='inflection',in
 
     return fig
 
-def plot3d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',
+def plot3d_XANES_vs_t(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
                       colormap_potential='viridis',colormap_cycle='plasma',width=12,height=10,alpha=0.5,
                       plot_range=None):
     '''
     Function to plot a 3D graph of all the XAS spectra over time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap_potential: Name of the colormap you want to use for the plot (according to voltage).
-    :colormap_cycle: Name of the colormap you want to use for the arrows pointing the cycles.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap_potential: Name of the colormap you want to use for the plot (according to voltage). Default is set to 'viridis'.
+    :colormap_cycle: Name of the colormap you want to use for the arrows pointing the cycles. Default is set to 'plasma'.  Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
-    :alpha: Transparency of the line collections.
+    :alpha: Opacity of the line collections.
     :plot_range: List [x,y] containing the energy range of the plot.
     :return: Plot.
     '''
@@ -2097,21 +2885,29 @@ def plot3d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
     fig.canvas.mpl_connect('motion_notify_event', update_position)
     return fig
 
-def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',
+def plot2d_XANES_vs_t(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
                       colormap='tab20b', width=8,height=6,plot_range=None,hlines=False):
     '''
     Function to plot a 2D intensity graph of all the XAS spectra over time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'tab20b'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
     :return: Plot.
     '''
     # if no cycle number is selected then it just plots all of them
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(merged_df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in merged_df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(merged_df)
     newECdf=merged_df.copy(deep=True)
@@ -2216,15 +3012,16 @@ def plot2d_XANES_vs_t(merged_df,nb_cycle=None,edge_intensity='inflection',intens
         #ax1.axhline(merged_df['absolute time/h'][idx], color='b', ls='dashed', linewidth=0.7)
     return fig
 
-def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',
+def plot2d_XANES_vs_t_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
                            colormap='tab20b', width=8,height=6,plot_range=None,hlines=False):
     '''
     Function to plot a 2D intensity graph of all the XAS spectra over time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'tab20b'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
@@ -2328,22 +3125,24 @@ def plot2d_XANES_vs_t_beta(merged_df,nb_cycle=None,edge_intensity='inflection',i
         #ax1.axhline(merged_df['absolute time/h'][idx], color='b', ls='dashed', linewidth=0.7)
     return fig
 
-def plotdQdU_dEdgedU_vs_U(electrodf,merged_df,edge_intensity=0.7,intensity_col='normalized',
-                          nb_cycle=None,reduce_by=1,boxcar=1,savgol=(1,0),colormap1='plasma',
+def plotdQdU_dEdgedU_vs_U(electrodf,merged_df,edge_intensity=0.7,intensity_col='',
+                          nb_cycle='all',reduce_by=1,boxcar=1,savgol=(1,0),colormap1='plasma',
                           colormap2='viridis',width=10,height=6,dotsize=10,dotsize2=10,alpha=1, mass=1000):
     '''
     Function to plot a capacity vs potential graph.
     
     :electrodf: Pandas dataframe with the data from the EC Lab file.
-    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :reduce_by: Factor by which you want to reduce the number of points on your dataframe.
     :boxcar: Factor indicating the size of the moving window of a moving average filter
     :savgol: Tuple (x,y) with the parameters of the Savitzky-Golay filter that you want to apply.
-    :colormap: Name of the colormap you want to use for the plot.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :mass: Mass of active material.
     :return: Plot.
     '''
@@ -2421,8 +3220,6 @@ def plotdQdU_dEdgedU_vs_U(electrodf,merged_df,edge_intensity=0.7,intensity_col='
         sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
         leg = ax0.legend(loc='upper left',prop={'size': 14},markerscale=2)
     return fig
-
-
 # ---------------------------------------------------------- fitting ----------------------------------------------------------
 def fit_lines(x,y,points):
     res_matrix=[]
@@ -2439,19 +3236,20 @@ def fit_lines(x,y,points):
         i=f
     return res_matrix, idx_matrix
 
-def fit_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',
+def fit_Eshift_vs_t(merged_df,points=None,nb_cycle='all',edge_intensity='inflection',intensity_col='',
                     colormap='plasma',width=10,height=6,dotsize=10,alpha=0.5):
     '''
     Function to plot edge shift vs time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     
@@ -2512,19 +3310,20 @@ def fit_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflecti
     sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(colormap), norm=norm)
     return fig
 
-def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inflection',intensity_col='normalized',
+def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle='all',edge_intensity='inflection',intensity_col='',
                          colormap='plasma',width=10,height=6,linewidth=2,alpha=0.5):
     '''
     Function to plot edge shift vs time.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     
@@ -2603,21 +3402,106 @@ def fit_only_Eshift_vs_t(merged_df,points=None,nb_cycle=None,edge_intensity='inf
     return fig
 
 # ---------------------------------------------------------- MCR ALS ----------------------------------------------------------
+#Main Algorithm
+def simplisma(d, nr, error):
 
-def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensity='inflection',intensity_col='normalized',
+    def wmat(c,imp,irank,jvar):
+        dm=np.zeros((irank+1, irank+1))
+        dm[0,0]=c[jvar,jvar]
+        
+        for k in range(irank):
+            kvar=np.int(imp[k])
+            
+            dm[0,k+1]=c[jvar,kvar]
+            dm[k+1,0]=c[kvar,jvar]
+            
+            for kk in range(irank):
+                kkvar=np.int(imp[kk])
+                dm[k+1,kk+1]=c[kvar,kkvar]
+                
+        return dm
+
+    nrow,ncol=d.shape
+    
+    dl = np.zeros((nrow, ncol))
+    imp = np.zeros(nr)
+    mp = np.zeros(nr)
+    
+    w = np.zeros((nr, ncol))
+    p = np.zeros((nr, ncol))
+    s = np.zeros((nr, ncol))
+    
+    error=error/100
+    mean=np.mean(d, axis=0)
+    error=np.max(mean)*error
+    
+    s[0,:]=np.std(d, axis=0)
+    w[0,:]=(s[0,:]**2)+(mean**2)
+    p[0,:]=s[0,:]/(mean+error)
+
+    imp[0] = np.int(np.argmax(p[0,:]))
+    mp[0] = p[0,:][np.int(imp[0])]
+    
+    l=np.sqrt((s[0,:]**2)+((mean+error)**2))
+
+    for j in range(ncol):
+        dl[:,j]=d[:,j]/l[j]
+        
+    c=np.dot(dl.T,dl)/nrow
+    
+    w[0,:]=w[0,:]/(l**2)
+    p[0,:]=w[0,:]*p[0,:]
+    s[0,:]=w[0,:]*s[0,:]
+    
+    print('purest variable 1: ', np.int(imp[0]+1), mp[0])
+
+    for i in range(nr-1):
+        for j in range(ncol):
+            dm=wmat(c,imp,i+1,j)
+            w[i+1,j]=np.linalg.det(dm)
+            p[i+1,j]=w[i+1,j]*p[0,j]
+            s[i+1,j]=w[i+1,j]*s[0,j]
+            
+        imp[i+1] = np.int(np.argmax(p[i+1,:]))
+        mp[i+1] = p[i+1,np.int(imp[i+1])]
+        
+        print('purest variable '+str(i+2)+': ', np.int(imp[i+1]+1), mp[i+1])
+        
+    sp_arr=np.zeros((nrow, nr))
+    
+    for i in range(nr):
+        sp_arr[0:nrow,i]=d[0:nrow,np.int(imp[i])]
+        
+    plt.subplot(3, 1, 2)
+    plt.plot(sp_arr)
+    plt.title('Estimate Components')
+    
+    concs = np.dot(np.linalg.pinv(sp_arr), d)
+    
+    plt.subplot(3, 1, 3)
+    for i in range(nr):
+        plt.plot(concs[i])
+    plt.title('Concentrations')
+    plt.show()
+    
+    return sp_arr, concs
+
+def Eshift_conc_vs_U_stacked(merged_df,nb_cycle='all',conc_array=[],edge_intensity='inflection',intensity_col='',
                              colormap='plasma',width=15,height=6,linewidth=1.5,dotsize=18,alpha=0.5,wspace=0.0,
                              hspace=0.0,top=0.07):
     '''
     Function to plot edge shift and concentration profile (determined by MCR-ALS toolbox matlab) vs potential.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :conc_array: Numpy array with the concentration profiles.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -2636,13 +3520,15 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
     maxs = []
     mins = []
     widths = []
-    for index, row in newECdf.groupby('half cycle').agg({'Ewe/V': ['min', 'max']}).iterrows():
+    mode = []
+    for index, row in newECdf.groupby('half cycle').agg({'Ewe/V': ['min', 'max'], 'ox/red':['mean']}).iterrows():
         width=row[1]-row[0]
         if width !=0:
             half_cycles.append(index)
             mins.append(row[0])
             maxs.append(row[1])
             widths.append(width)
+            mode.append(round(row[2]))
 
     gs_top = fig.add_gridspec(nrows=2, ncols=len(half_cycles), width_ratios=widths, top=0.95)
 
@@ -2663,18 +3549,12 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
         ax0.tick_params(axis='both', labelsize=13)
         ax0.set_xlim(mins[col],maxs[col])
         ax0.set_ylim(edge.min(),edge.max())
-        #ax.set_ylim(8346.4,8347.8)
-        #ax0.legend(fontsize=13)
+        if mode[col]==0:
+            ax0.invert_xaxis()
         if col!=0:
-            #ax.yaxis.set_ticklabels([])
-            #condition=output_cell4_df['half cycle']==half_cycles[col]
             ax0.get_yaxis().set_visible(False)
-            #ax.spines['left'].set_color('white')
             ax0.spines['left'].set_linestyle("dashed")
             ax0.spines['left'].set_capstyle("butt")
-            #ax.annotate("2",xy =(0.1,0.1))
-            if (col%2)!=0:
-                ax0.invert_xaxis()
         else:
             ax0.set_ylabel("Edge @ J="+str(edge_intensity)+" (eV)", fontsize=15, labelpad=10)
             #xticks[0].label1.set_visible(False)
@@ -2690,26 +3570,19 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
             ax1.scatter(newECdf[condition]['Ewe/V'],conc[art_idx:art_idx+len(newECdf[condition]['Ewe/V'])],s=dotsize*5/6,zorder=1)
             #ax1.scatter(output_cell4_df[condition]['Ewe/V'],conc[art_idx:art_idx+len(output_cell4_df[condition]['Ewe/V'])],s=15)
         art_idx=art_idx+len(newECdf[condition]['Ewe/V'])
-        # remove last tick label and first tick label for the necessary subplots
-        #ax1.xaxis.set_major_locator(loc)
+
         xticks = ticker.MaxNLocator(round(widths[col]/0.25))
-    # Set the yaxis major locator using your ticker object. You can also choose the minor
-    # tick positions with set_minor_locator.
+
         ax1.xaxis.set_major_locator(xticks)
         ax1.tick_params(axis='both', labelsize=13)
         ax1.set_xlim(mins[col],maxs[col])
         ax1.set_ylim(0,1)
-        #ax.set_ylim(8346.4,8347.8)
+        if mode[col]==0:
+            ax1.invert_xaxis()
         if col!=0:
-            #ax.yaxis.set_ticklabels([])
-            #condition=output_cell4_df['half cycle']==half_cycles[col]
             ax1.get_yaxis().set_visible(False)
-            #ax.spines['left'].set_color('white')
             ax1.spines['left'].set_linestyle("dashed")
             ax1.spines['left'].set_capstyle("butt")
-            #ax.annotate("2",xy =(0.1,0.1))
-            if (col%2)!=0:
-                ax1.invert_xaxis()
         else:
             ax1.set_ylabel("Relative concentration", fontsize=15, labelpad=10)
 
@@ -2725,19 +3598,134 @@ def Eshift_conc_vs_U_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensit
     plt.subplots_adjust(hspace=hspace)
     return fig
 
-def U_Eshift_conc_vs_t_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intensity='inflection',intensity_col='normalized',
+def Eshift_conc_vs_x_stacked(merged_df,nb_cycle='all',conc_array=[],edge_intensity='inflection',intensity_col='',
+                             x_col='x',colormap='plasma',width=15,height=6,linewidth=1.5,dotsize=18,alpha=0.5,wspace=0.0,
+                             hspace=0.0,top=0.07):
+    '''
+    Function to plot edge shift and concentration profile (determined by MCR-ALS toolbox matlab) vs potential.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :conc_array: Numpy array with the concentration profiles.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+    
+    if (x_col=='x') & ('calculated x' in newECdf.columns):
+        x_col='calculated x'
+    elif x_col in newECdf.columns:
+        x_col=x_col
+    else: raise ValueError('x not found in the dataframe columns.')
+    
+    #colormap according to total number of cycles
+    cm=plt.get_cmap(colormap)
+    color_dqdv=cm(np.linspace(0, 1, len(newECdf['cycle number'].unique())))
+    
+    fig = plt.figure(constrained_layout=True)
+    fig.set_size_inches(width, height)
+
+    half_cycles = []
+    maxs = []
+    mins = []
+    widths = []
+    mode = []
+    for index, row in newECdf.groupby('half cycle').agg({x_col: ['min', 'max'], 'ox/red':['mean']}).iterrows():
+        width=row[1]-row[0]
+        if width !=0:
+            half_cycles.append(index)
+            mins.append(row[0])
+            maxs.append(row[1])
+            widths.append(width)
+            mode.append(round(row[2]))
+    print(mode)
+    gs_top = fig.add_gridspec(nrows=2, ncols=len(half_cycles), width_ratios=widths, top=0.95)
+
+    # PLOTTING THE EDGE EVOLUTION
+    art_idx=0
+    for col in range(len(half_cycles)):
+        condition=newECdf['half cycle']==half_cycles[col]
+        index_cm=col//2
+        ax0 = fig.add_subplot(gs_top[0,col])
+        ax0.plot(newECdf[condition][x_col],edge[art_idx:art_idx+len(newECdf[condition][x_col])],
+                 alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax0.scatter(newECdf[condition][x_col],edge[art_idx:art_idx+len(newECdf[condition][x_col])],
+                    label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
+        art_idx=art_idx+len(newECdf[condition][x_col])
+        ax0.get_xaxis().set_ticks([])
+        ax0.tick_params(axis='both', labelsize=13)
+        ax0.set_xlim(mins[col],maxs[col])
+        ax0.set_ylim(edge.min(),edge.max())
+        if mode[col]!=0:
+            ax0.invert_xaxis()
+        if col!=0:
+            ax0.get_yaxis().set_visible(False)
+            ax0.spines['left'].set_linestyle("dashed")
+            ax0.spines['left'].set_capstyle("butt")
+        else:
+            ax0.set_ylabel("Edge @ J="+str(edge_intensity)+" (eV)", fontsize=15, labelpad=10)
+            #xticks[0].label1.set_visible(False)
+
+    art_idx=0
+    # PLOTTING CONCENTRATION EVOLUTION
+    for col in range(len(half_cycles)):
+        condition=newECdf['half cycle']==half_cycles[col]
+        ax1 = fig.add_subplot(gs_top[1,col])
+        for conc in conc_array:
+            ax1.plot(newECdf[condition][x_col],conc[art_idx:art_idx+len(newECdf[condition][x_col])],
+                     alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+            ax1.scatter(newECdf[condition][x_col],conc[art_idx:art_idx+len(newECdf[condition][x_col])],s=dotsize*5/6,zorder=1)
+        art_idx=art_idx+len(newECdf[condition][x_col])
+        xticks = ticker.MaxNLocator(round(widths[col]/0.25))
+        ax1.xaxis.set_major_locator(xticks)
+        ax1.tick_params(axis='both', labelsize=13)
+        ax1.set_xlim(mins[col],maxs[col])
+        ax1.set_ylim(0,1)
+        if mode[col]!=0:
+            ax1.invert_xaxis()
+        if col!=0:
+            ax1.get_yaxis().set_visible(False)
+            ax1.spines['left'].set_linestyle("dashed")
+            ax1.spines['left'].set_capstyle("butt")
+        else:
+            ax1.set_ylabel("Relative concentration", fontsize=15, labelpad=10)
+
+    gs_base = fig.add_gridspec(nrows=1, ncols=len(half_cycles), width_ratios=widths, top=top,bottom=top-0.01)
+    # X AXIS LABEL
+    ax2 = fig.add_subplot(gs_base[0,:])
+    ax2.get_xaxis().set_ticks([])
+    ax2.get_yaxis().set_ticks([])
+    for axis in ['top','bottom','left','right']:
+        ax2.spines[axis].set_color('white')
+    ax2.set_xlabel("x", fontsize=15)
+    plt.subplots_adjust(wspace=wspace) # no vertical space between plots0.
+    plt.subplots_adjust(hspace=hspace)
+    return fig
+
+def U_Eshift_conc_vs_t_stacked(merged_df,nb_cycle='all',conc_array=[],edge_intensity='inflection',intensity_col='',
                                colormap='plasma',width=15,height=10,greyline=False,linewidth=1.5,dotsize=18,alpha=0.5,hspace=0.0):
     '''
     Function to plot edge shift and concentration profile (determined by MCR-ALS toolbox matlab) vs potential.
     
     :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or integer with the cycle you want to plot.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :conc_array: Numpy array with the concentration profiles.
     :edge_intensity: Intensity value to get the edge energy value.
-    :colormap: Name of the colormap you want to use for the plot.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
     :width: Width of the graph.
     :height: Height of the graph.
     :dotsize: Size of the dot of the scatter plot.
-    :alpha: Transparency of the points.
+    :alpha: Opacity of the points.
     :return: Plot.
     '''
     edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
@@ -2807,3 +3795,232 @@ def U_Eshift_conc_vs_t_stacked(merged_df,nb_cycle=None,conc_array=[],edge_intens
 
     plt.subplots_adjust(hspace=hspace) # no horizontal space between plots
     return fig
+
+def U_x_Eshift_conc_vs_t_stacked(merged_df,nb_cycle='all',conc_array=[],edge_intensity='inflection',intensity_col='',
+                                 x_col='x',colormap='plasma',width=15,height=15,greyline=False,linewidth=1.5,dotsize=18,
+                                 alpha=0.5,hspace=0.0):
+    '''
+    Function to plot edge shift and concentration profile (determined by MCR-ALS toolbox matlab) vs potential.
+    
+    :merged_df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
+    :conc_array: Numpy array with the concentration profiles.
+    :edge_intensity: Intensity value to get the edge energy value.
+    :intensity_col: Name of the column with the intensity values.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html.
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :dotsize: Size of the dot of the scatter plot.
+    :alpha: Opacity of the points.
+    :return: Plot.
+    '''
+    edge=get_edge(merged_df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    newECdf=merged_df.copy(deep=True)
+    check_cycles(newECdf)
+    nb_cycle=convert_nb_cycle(newECdf,nb_cycle)
+
+    #colormap according to total number of cycles
+    #cm=plt.get_cmap(colormap)
+    #color_dqdv=cm(np.linspace(0, 1, len(merged_df['cycle number'].unique())))
+    norm = Normalize(vmin=int(newECdf['cycle number'].min()), vmax=int(newECdf['cycle number'].max()))
+    fig = plt.figure(constrained_layout=True)
+    fig.set_size_inches(width, height)
+
+
+    gs = gridspec.GridSpec(4, 1) 
+    ax0 = plt.subplot(gs[0])
+    ax1 = plt.subplot(gs[1])
+    ax2 = plt.subplot(gs[2])
+    ax3 = plt.subplot(gs[3])
+    condition = newECdf['cycle number'].isin(nb_cycle)
+    if greyline:
+        ax0.plot(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition],
+                 alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax1.plot(newECdf['absolute time/h'][condition], edge[condition],
+                 alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+    # PLOTTING THE POTENTIAL
+    ax0.scatter(newECdf['absolute time/h'][condition],newECdf['Ewe/V'][condition], color='black',s=dotsize*3/5, marker="_",
+                zorder=1)
+    # PLOTTING X
+    ax1.scatter(newECdf['absolute time/h'][condition],newECdf[x_col][condition], color='black',s=dotsize*3/5, marker="_",
+                zorder=1)
+    # PLOTTING THE EDGE SHIFT
+    ax2.scatter(newECdf['absolute time/h'][condition], edge[condition], s=dotsize, c=newECdf['cycle number'][condition], 
+                cmap=colormap, norm=norm, zorder=1)
+    # PLOTTING THE CONCENTRATION PROFILE
+    for conc in conc_array:
+        if greyline:
+            ax3.plot(newECdf[condition]['absolute time/h'],conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax3.scatter(newECdf[condition]['absolute time/h'],conc,s=dotsize*5/6,zorder=1)
+            
+    # axes parameters
+    ax0.minorticks_on()
+    ax1.minorticks_on()
+    ax2.minorticks_on()
+    ax3.minorticks_on()
+    ax0.tick_params(axis='both', labelsize=13, direction='in')
+    ax1.tick_params(axis='both', labelsize=13, direction='in')
+    ax2.tick_params(axis='both', labelsize=13, direction='in')
+    ax3.tick_params(axis='both', labelsize=13, direction='in')
+    ax0.tick_params(which="minor", axis="both", direction="in")
+    ax1.tick_params(which="minor", axis="both", direction="in")
+    ax2.tick_params(which="minor", axis="both", direction="in")
+    ax3.tick_params(which="minor", axis="both", direction="in")
+    ax0.xaxis.set_ticklabels([])
+    ax1.xaxis.set_ticklabels([])
+    ax2.xaxis.set_ticklabels([])
+    # x
+    ax3.set_xlabel("Time (h)",fontsize=14,labelpad=10)
+    margin = 0.02
+    full_range_x = newECdf['absolute time/h'].max()-newECdf['absolute time/h'].min()
+    x_min=newECdf['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
+    x_max=newECdf['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    ax0.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax1.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax2.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    ax3.set_xlim(newECdf['absolute time/h'].min(),newECdf['absolute time/h'].max())
+    # y label
+    ax0.set_ylabel('Potential vs. Li/Li$^+$ (V)',fontsize=14,labelpad=10)
+    ax1.set_ylabel('x',fontsize=14,labelpad=10)
+    ax2.set_ylabel('Edge @ J='+str(edge_intensity)+' (eV)',fontsize=14,labelpad=10)
+    ax3.set_ylabel('Relative concentration',fontsize=14,labelpad=10)
+    ax3.set_ylim(0,1)
+
+    plt.subplots_adjust(hspace=hspace) # no horizontal space between plots
+    return fig
+
+
+# --------------------------------------------------- SVD analysis and plots ---------------------------------------------------
+def get_intensity_arr(df,intensity_col):
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
+    int_arr = np.array(df[intensity_col].tolist())
+    return int_arr
+
+def display_all(df,intensity_col='',colormap='viridis'):
+    energy=df['shifted energy'][0]
+    arr=get_svd_arr(df,intensity_col)
+    fig=plt.figure(figsize=(8,5))
+    cm=plt.get_cmap(colormap)
+    colors = cm(np.linspace(0, 1, arr.shape[0]))
+    for i,line in enumerate(arr):
+        plt.plot(energy,line, color=colors[-i])
+    return fig
+
+def plot_variance(df,n_pc=20,intensity_col=''):
+    arr=get_intensity_arr(df,intensity_col)
+    svd_arr = sp.linalg.svd(arr)
+    fig, axs = plt.subplots(2,figsize=(8,7))
+    axs[0].plot(np.arange(1,n_pc+1),100*svd_arr[1][:n_pc]**2/sum(svd_arr[1]**2),marker="o",fillstyle='none')
+    axs[0].set_yscale('log')
+    axs[0].xaxis.set_major_locator(ticker.MultipleLocator(2))
+    axs[0].tick_params(axis='both', labelsize=13)
+    axs[0].set_xlabel("Component number",fontsize=13)
+    axs[0].set_title("Variance plot in log scale",fontweight='bold',fontsize=14)
+    axs[1].plot(np.arange(1,n_pc+1),100*svd_arr[1][:n_pc]**2/sum(svd_arr[1]**2),marker="o",fillstyle='none')
+    axs[1].xaxis.set_major_locator(ticker.MultipleLocator(2))
+    axs[1].tick_params(axis='both', labelsize=13)
+    axs[1].set_xlabel("Component number",fontsize=13)
+    axs[1].set_title("Variance plot",fontweight='bold',fontsize=14)
+    plt.subplots_adjust(hspace=0.5)
+    return fig
+
+def plot_scree(df,n_pc=20,intensity_col=''):
+    arr=get_intensity_arr(df,intensity_col)
+    svd_arr = sp.linalg.svd(arr)
+    fig=plt.figure(figsize=(8,5))
+    plt.plot(np.arange(1,n_pc+1),svd_arr[1][:n_pc],marker="D",fillstyle='none')
+    plt.yscale('log')
+    plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(2))
+    plt.tick_params(axis='both', labelsize=13)
+    plt.xlabel("Component number",fontsize=13)
+    plt.title("Scree plot in log scale",fontweight='bold',fontsize=14)
+    return fig
+
+def plot_PCA_eigs(df,n_pc=20,intensity_col=''):
+    arr=get_intensity_arr(df,intensity_col)
+    svd_arr = sp.linalg.svd(arr)
+    if n_pc>6:
+        n_pc=6
+    gs = gridspec.GridSpec(2, 1)
+    fig1,ax1 = plt.subplots(figsize=(15,5))
+    for i, (eigenvalue, PC_col) in enumerate(zip(svd_arr[1][:n_pc],np.transpose(svd_arr[0])[:n_pc])):
+        ax1.plot(np.arange(1,arr.shape[0]+1), PC_col, color="rbgkmcy"[i], label='PCA%1d eig. =%6.4f' %(i+1,eigenvalue))
+
+    ax1.legend(bbox_to_anchor=(0.9, 0.7))
+    ax1.set_xlabel("Spectrum number",fontsize=13)
+    ax1.set_title("u as a function of spectra number",fontweight='bold',fontsize=14)
+
+    fig2, axs = plt.subplots(nrows=2, ncols=3)
+    fig2.set_size_inches(20, 10)
+    fig2.subplots_adjust(wspace=0.2)
+    fig2.subplots_adjust(hspace=0.5)
+
+    for i, (eigenvalue, PC_col, ax) in enumerate(zip(svd_arr[1][:n_pc], np.transpose(svd_arr[0])[:n_pc], axs.flatten())):
+        ax.plot(np.arange(1,arr.shape[0]+1), PC_col, color="rbgkmcy"[i], label='PCA%1d eig. =%6.4f' %(i+1,eigenvalue))
+        ax.set_xlabel("Spectrum number",fontsize=13)
+        ax.set_title("PCA%1d Evolution" %(i+1),fontweight='bold',fontsize=14)
+        ax.tick_params(axis='both', labelsize=13)
+        ax.legend(fontsize=13)
+    return fig1, fig2
+
+def plot_PCA_vars(df,n_pc=20,intensity_col=''):
+    arr=get_intensity_arr(df,intensity_col)
+    svd_arr = sp.linalg.svd(arr)
+    if n_pc>6:
+        n_pc=6
+    fig, axs = plt.subplots(nrows=2, ncols=3)
+    fig.set_size_inches(20, 10)
+    fig.subplots_adjust(wspace=0.2)
+    fig.subplots_adjust(hspace=0.5)
+    sum_eigenvalues=sum(svd_arr[1]**2)
+
+    for i, (eigenvalue, PC_row, ax) in enumerate(zip(svd_arr[1][:n_pc], svd_arr[2][:n_pc], axs.flatten())):
+        ax.plot(np.arange(1,arr.shape[1]+1), PC_row)
+        ax.set_title("PCA %1d var. = %.6g" %(i+1,100*eigenvalue**2/sum_eigenvalues),fontweight='bold',fontsize=14)
+        ax.tick_params(axis='both', labelsize=13)
+    return fig
+
+def plot_scores_2D(df,n_pc=4,intensity_col=''):
+    arr=get_intensity_arr(df,intensity_col)
+    svd_arr = sp.linalg.svd(arr)
+    if n_pc==4:
+        fig, axs = plt.subplots(nrows=2, ncols=3)
+        fig.set_size_inches(11, 7)
+        fig.subplots_adjust(wspace=0.3)
+        fig.subplots_adjust(hspace=0.3)
+        flat = axs.flatten()
+        k=0
+        for i, (eigenvalue, PC_col) in enumerate(zip(svd_arr[1][:n_pc], np.transpose(svd_arr[0])[:n_pc])):
+            for j in range(i+1,n_pc):
+                flat[k].scatter(PC_col*eigenvalue, np.transpose(svd_arr[0])[j]*svd_arr[1][j], color="r", s=10)
+                flat[k].set_title("PCA"+str(i+1)+" vs PCA"+str(j+1),fontweight='bold',fontsize=14)
+                flat[k].tick_params(axis='both', labelsize=11)
+                k+=1
+    elif n_pc==5:
+        fig, axs = plt.subplots(nrows=3, ncols=4)
+        fig.set_size_inches(15, 10)
+        fig.subplots_adjust(wspace=0.3)
+        fig.subplots_adjust(hspace=0.3)
+        flat = axs.flatten()
+        k=0
+        for i, (eigenvalue, PC_col) in enumerate(zip(svd_arr[1][:n_pc], np.transpose(svd_arr[0])[:n_pc])):
+            for j in range(i+1,n_pc):
+                if (k==7) or (k==10):
+                    flat[k].axis('off')
+                    k+=1
+                flat[k].scatter(PC_col*eigenvalue, np.transpose(svd_arr[0])[j]*svd_arr[1][j], color="r", s=10)
+                flat[k].set_title("PCA"+str(i+1)+" vs PCA"+str(j+1),fontweight='bold',fontsize=14)
+                flat[k].tick_params(axis='both', labelsize=11)
+                k+=1
+    return fig
+
+def plot_scores_3D(df,n_pc=20,intensity_col=''):
+    arr=get_intensity_arr(df,intensity_col)
+    svd_arr = sp.linalg.svd(arr)
+    return
