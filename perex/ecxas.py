@@ -608,7 +608,8 @@ def getSingleXASdict_samba(filename):
     outputDict=headerDataDict|spectrumDataDict
     return outputDict
 
-def mergeEC_XASdfs(EC_df,XAS_files_df,which_col_EC='datetime',which_col_XAS='stop time'):
+def mergeEC_XASdfs(EC_df,XAS_files_df,which_col_EC='datetime',which_col_XAS='stop time',
+                   which_col_XAS_start='start time',tol='10 min'):
     '''
     Function to merge electro and XAS-files dataframes based on datetime.
     
@@ -643,7 +644,7 @@ def mergeEC_XASdfs(EC_df,XAS_files_df,which_col_EC='datetime',which_col_XAS='sto
                               left_on=new_XAScols_dict[which_col_XAS],
                               right_on=new_ECcols_dict[which_col_EC],
                               direction='nearest',
-                              tolerance=pd.Timedelta('10 min'))
+                              tolerance=pd.Timedelta(tol))
     # choose which columns to have in your text file
     cols_XAS = XAS_files_df.rename(columns=new_XAScols_dict).columns.tolist()
     cols_EC = [new_ECcols_dict[which_col_EC],'Ewe/V', '<I>/mA', 'Capacity/mA.h','half cycle','cycle number']
@@ -651,7 +652,7 @@ def mergeEC_XASdfs(EC_df,XAS_files_df,which_col_EC='datetime',which_col_XAS='sto
     merged_df.dropna(how='all', axis=0, subset=['Ewe/V','<I>/mA'], inplace=True)
     merged_df.reset_index(drop=True, inplace=True)
     elapsed_col=next(col for col in merged_df.columns if 'elapsed' in col)
-    merged_df['absolute time/s'] = (merged_df[new_ECcols_dict[which_col_EC]]-merged_df[new_ECcols_dict[which_col_EC]][0]).dt.total_seconds()+merged_df[elapsed_col]
+    merged_df['absolute time/s'] = (merged_df[new_ECcols_dict[which_col_EC]]-merged_df[new_XAScols_dict[which_col_XAS_start]][0]).dt.total_seconds()
     merged_df['absolute time/min'] = merged_df['absolute time/s']/60
     merged_df['absolute time/h'] = merged_df['absolute time/min']/60
     #merged_df['start time XAS'] = merged_df['start time XAS'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
@@ -877,14 +878,15 @@ def plotUI_vs_time(electrodf,width=15,height=5):
     # add an additional y axis for the current
     ax2 = ax1.twinx()
     # get time series
+    timeCol=[col for col in electrodf.columns if 'time/s' in col.lower()][0]
     if 'datetime' in electrodf.columns:
         timeSeries=(electrodf['datetime']-electrodf['datetime'][0]).dt.total_seconds()
-    elif electrodf[electrodf['time/s']==0].shape[0]>1:
-        timeSeries=list(electrodf['time/s'][:electrodf[electrodf['time/s']==0].index[1]])
-        for i in electrodf[electrodf['time/s']==0].index[1:-1]:
-            timeSeries.extend(list(electrodf['time/s'][i:i+1]+electrodf['time/s'][i-1]))
+    elif electrodf[electrodf[timeCol]==0].shape[0]>1:
+        timeSeries=list(electrodf[timeCol][:electrodf[electrodf[timeCol]==0].index[1]])
+        for i in electrodf[electrodf[timeCol]==0].index[1:-1]:
+            timeSeries.extend(list(electrodf[timeCol][i:i+1]+electrodf[timeCol][i-1]))
     else:
-        timeSeries=electrodf['time/s']
+        timeSeries=electrodf[timeCol]
     # plot V vs. time
     ax1.scatter(timeSeries/3600,electrodf['Ewe/V'],color="blue",s=0.2)
     # plot I vs. time
@@ -1097,10 +1099,10 @@ def get_edge(df,intensity_val='inflection',intensity_col=''):
         edge_df=pd.Series(data=edge_energy,index=indexes)
     return edge_df
 
-def plotAllXAS(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='viridis',width=7,height=4):
+def plotAllXAS(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='viridis',pre=20, post=40,width=7,height=4):
     edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(df)
-    rang=[edge.mean()-20,edge.mean()+40]
+    rang=[edge.mean()-pre,edge.mean()+post]
     if len(intensity_col)==0:
         try:
             intensity_col=get_intensity_col(df)
@@ -2194,7 +2196,7 @@ def plotdEshiftdt_vs_t(merged_df,nb_cycle='all',edge_intensity='inflection',inte
     #ax.legend(handles=scatter.legend_elements()[0], title="Edge shift", ncol = 3, title_fontsize=12, labelspacing=0.05)
     return fig
 def plotEshift_vs_t_stacked(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
-                            width=10,height=6,dotsize=10,option=1,guideline=False):
+                            width=10,height=6,dotsize=10,option=1,guideline=False,hspace=.0):
     '''
     Function to plot edge shift vs time.
     
@@ -2211,13 +2213,14 @@ def plotEshift_vs_t_stacked(merged_df,nb_cycle='all',edge_intensity='inflection'
     :return: Plot.
     '''
     if option==1:
-        fig=plotEshift_vs_t_stacked_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,width,height,dotsize,guideline)
+        fig=plotEshift_vs_t_stacked_alpha(merged_df,nb_cycle,edge_intensity,intensity_col,width,height,dotsize,guideline,hspace)
     else:
-        fig=plotEshift_vs_t_stacked_beta(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,dotsize,guideline)
+        fig=plotEshift_vs_t_stacked_beta(merged_df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,dotsize,guideline,
+                                         hspace)
     return fig
 
 def plotEshift_vs_t_stacked_alpha(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',width=10,height=6,
-                                  dotsize=10,guideline=False):
+                                  dotsize=10,guideline=False,hspace=.0):
     '''
     Function to plot edge shift vs time.
     
@@ -2311,13 +2314,13 @@ def plotEshift_vs_t_stacked_alpha(merged_df,nb_cycle='all',edge_intensity='infle
     yticks = ax1.yaxis.get_major_ticks()
     #yticks[-1].label1.set_visible(False)
     #plt.subplots_adjust(wspace=.0) # no vertical space between plots
-    plt.subplots_adjust(hspace=.0) # no horizontal space between plots
+    plt.subplots_adjust(hspace=hspace) # no horizontal space between plots
     # Put a legend to the right of the current axis
     leg = ax1.legend(loc='center left', bbox_to_anchor=(1, 0.2), prop={'size': 12})
     return fig
 
 def plotEshift_vs_t_stacked_beta(merged_df,nb_cycle='all',edge_intensity='inflection',intensity_col='',colormap='plasma',
-                                 width=10,height=6,dotsize=10,alpha=0.5):
+                                 width=10,height=6,dotsize=10,alpha=0.5,hspace=.0):
     '''
     Function to plot edge shift vs time.
     
@@ -2386,7 +2389,7 @@ def plotEshift_vs_t_stacked_beta(merged_df,nb_cycle='all',edge_intensity='inflec
     yticks = ax1.yaxis.get_major_ticks()
     #yticks[-1].label1.set_visible(False)
     #plt.subplots_adjust(wspace=.0) # no vertical space between plots
-    plt.subplots_adjust(hspace=.0) # no horizontal space between plots
+    plt.subplots_adjust(hspace=hspace) # no horizontal space between plots
     return fig
 
 #### FOR THE MOMENT THESE ONLY WORK FOR DATAFRAMES WITH NORMALISED XAS FILES
