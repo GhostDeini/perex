@@ -247,8 +247,7 @@ def getXASdf_samba_beta(hdf_path,txt_path): # old version
 
 # ------------------------- merging data from two different dataframes based on time -------------------------
 
-def merge_dfs(data1_df,data2_df,timecol_data1='acquisition_datetime',timecol_data2='stop_time',
-              start_timecol_data2='start_time',interp=False,tol='10 min'):
+def merge_dfs(data1_df,data2_df,timecol_data1='acquisition_datetime',interp=False,tol='10 min'):
     '''
     Function to merge EC or Raman and XAS-files dataframes based on datetime.
     Reference time comes from XAS experiment. All EC data will be interpolated.
@@ -289,6 +288,8 @@ def merge_dfs(data1_df,data2_df,timecol_data1='acquisition_datetime',timecol_dat
     elif data2_type=='ECXAS' or data2_type=='RAMANXAS':
         start_timecol_data2='start_time_XAS'
         timecol_data2='stop_time_XAS'
+    else:
+        raise ValueError("Could not correctly merge the dataframes. Please check the parameters selection.")
     
     #new_data2_cols_dict = {}
     #for col in data2_df.columns:
