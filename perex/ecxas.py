@@ -98,6 +98,9 @@ def getECdf(*args, with_settings=0, acTime=1):
         base_df.attrs=newAttrs
     print('EC dataframe ready.')
     base_df.columns = base_df.columns.str.replace(' ', '_')
+    updict={'DF TYPE':'EC'}
+    updict.update(base_df.attrs)
+    base_df.attrs=updict
     if with_settings!=0: # get an additional dataframe for settings only
         return base_df, main_settings_df
     else:
@@ -155,6 +158,7 @@ def getXASdf(XAS_folder,filters=[],recursive=True):
     XAS_df.columns = XAS_df.columns.str.replace(' ', '_')
     #XAS_df['absolute_time/s']=(XAS_df['stop_time']-XAS_df['stop_time'][0]).dt.total_seconds()+XAS_df['elapsed_time/s']
     XAS_df['absolute_time/s']=(XAS_df['start_time']-XAS_df['start_time'][0]).dt.total_seconds()+XAS_df['elapsed_time/s']
+    XAS_df.attrs={'DF TYPE':'XAS'}
     return XAS_df
 
 # --------------------------- getting pandas dataframes including all Raman txt files in a folder ---------------------------
@@ -189,6 +193,7 @@ def getRAMANdf(csv_path,filename_col='filename', datetime_col='acquisition_date_
     raman_df['acquisition_datetime']=pd.to_datetime(raman_df['acquisition_datetime'], format='%m/%d/%Y %I:%M:%S %p')
     print('Raman dataframe ready.')
     raman_df.columns = raman_df.columns.str.replace(' ', '_')
+    raman_df.attrs={'DF TYPE':'RAMAN'}
     return raman_df
 
 # ------------------------- getting pandas dataframes including all XAS txt files in a folder - SAMBA -------------------------
@@ -243,8 +248,8 @@ def getXASdf_samba_beta(hdf_path,txt_path): # old version
 # ------------------------- merging data from two different dataframes based on time -------------------------
 
 def merge_dfs(data1_df,data2_df,data1_type='EC',data2_type='XAS',
-              acTime_col_data1='acquisition_datetime',acTime_col_data2='stop_time',
-              startTime_col_data2='start_time',interp=False,tol='10 min'):
+              timecol_data1='acquisition_datetime',timecol_data2='stop_time',
+              start_timecol_data2='start_time',interp=False,tol='10 min'):
     '''
     Function to merge EC or Raman and XAS-files dataframes based on datetime.
     Reference time comes from XAS experiment. All EC data will be interpolated.
@@ -253,27 +258,42 @@ def merge_dfs(data1_df,data2_df,data1_type='EC',data2_type='XAS',
     :data2_df: Pandas dataframe with the data from several XAS files.
     :data1_type: Specifies the nature of the dataset 1 (if it's EC or Raman).
     :data2_type: Specifies the nature of the dataset 2 (XAS by default).
-    :acTime_col_data1: Default set to 'acquisition_datetime' column.
-    :acTime_col_data2: Default set to 'stop time' column (start time + ellapsed time) but you can edit if necessary.
-    :startTime_col_data2: Name of the start time column of the XAS dataframe.
+    :timecol_data1: Default set to 'acquisition_datetime' column.
+    :timecol_data2: Default set to 'stop time' column (start time + ellapsed time) but you can edit if necessary.
+    :start_timecol_data2: Name of the start time column of the XAS dataframe.
     :interp: Default set to True.
     :tol: If interpolation is not wanted, the time tolerance for merging both dataframes.
     :return: Returns a merged dataframe with both informations.
     '''
-    # merge electro and XAS files dataframes based on approximate datetime
+    # merge electro and XAS (or Raman) files dataframes based on approximate datetime
+    data1_type=data1_df.attrs['DF TYPE']
+    #if data1_type=='EC' or data1_type=='RAMAN':
+    #    timecol_data1='acquisition_datetime'
     # check if datetime column exists in EC df
-    if acTime_col_data1 not in data1_df.columns:
+    if timecol_data1 not in data1_df.columns:
         raise ValueError("Cannot proceed without datetime column.")
     # convert 'acquisition_datetime' column string values in EC df to datetime format
-    if pd.api.types.is_datetime64_any_dtype(data1_df[acTime_col_data1].dtype)==False:
-        data1_df[acTime_col_data1]=pd.to_datetime(data1_df[acTime_col_data1])
+    if pd.api.types.is_datetime64_any_dtype(data1_df[timecol_data1].dtype)==False:
+        data1_df[timecol_data1]=pd.to_datetime(data1_df[timecol_data1])
     
     new_data1_cols_dict = {}
     for col in data1_df.columns:
         new_data1_cols_dict[col]=col.replace(col,col+"_"+data1_type)
-    new_data2_cols_dict = {}
-    for col in data2_df.columns:
-        new_data2_cols_dict[col]=col.replace(col,col+"_"+data2_type)
+        
+    data2_type=data2_df.attrs['DF TYPE']
+    if data2_type=='XAS':
+        start_timecol_data2='start_time'
+        timecol_data2='stop_time'
+        new_data2_cols_dict = {}
+        for col in data2_df.columns:
+            new_data2_cols_dict[col]=col.replace(col,col+"_"+data2_type)
+    elif data2_type=='ECXAS' or data2_type=='RAMANXAS':
+        start_timecol_data2='start_time_XAS'
+        timecol_data2='stop_time_XAS'
+    
+    #new_data2_cols_dict = {}
+    #for col in data2_df.columns:
+    #    new_data2_cols_dict[col]=col.replace(col,col+"_"+data2_type)
     # cols dtype int
     a=(data1_df.applymap(type)==int).all()
     # cols dtype string
@@ -285,28 +305,31 @@ def merge_dfs(data1_df,data2_df,data1_type='EC',data2_type='XAS',
     
     # make a copy of the data1 dataframe and interpolate values using datetimes from XAS files dataframe as reference
     temp_data1_df = data1_df.copy()
-    cycle_col=get_cycle_number_col(temp_data1_df)
-    temp_data1_df[cycle_col]=temp_data1_df[cycle_col].interpolate(method='pad')
-    # drop trailing (extreme) nan rows
-    temp_data1_df.dropna(axis=0,subset=[cycle_col],inplace=True)
-    temp_data1_df.reset_index(drop=True, inplace=True)
+    try:
+        cycle_col=get_cycle_number_col(temp_data1_df)
+        temp_data1_df[cycle_col]=temp_data1_df[cycle_col].interpolate(method='pad')
+        # drop trailing (extreme) nan rows
+        temp_data1_df.dropna(axis=0,subset=[cycle_col],inplace=True)
+        temp_data1_df.reset_index(drop=True, inplace=True)
+    except:
+        pass
     # convert columns with dtype int to dtype float (better for np array handling)
     temp_data1_df[a.index[a]] = temp_data1_df[a.index[a]].astype(float)
     # append datetimes from data2_df
-    newcol=pd.concat([temp_data1_df[acTime_col_data1],data2_df[acTime_col_data2].rename(acTime_col_data1)],
+    newcol=pd.concat([temp_data1_df[timecol_data1],data2_df[timecol_data2].rename(timecol_data1)],
                      ignore_index=True,join='outer')
-    temp_data1_df.drop(columns=acTime_col_data1,inplace=True)
+    temp_data1_df.drop(columns=timecol_data1,inplace=True)
     temp_data1_df=temp_data1_df.join(newcol, how='right')
     ###### DEPRECATED METHOD
-    #for i in data2_df[acTime_col_data2]:
-    #    temp_data1_df = temp_data1_df.append({acTime_col_data1: i}, ignore_index=True)
+    #for i in data2_df[timecol_data2]:
+    #    temp_data1_df = temp_data1_df.append({timecol_data1: i}, ignore_index=True)
     ######
-    temp_data1_df = temp_data1_df.sort_values(by=acTime_col_data1,ignore_index=True)
+    temp_data1_df = temp_data1_df.sort_values(by=timecol_data1,ignore_index=True)
     # nans indexes
     nan_idxs=temp_data1_df[temp_data1_df['filename'].isnull()].index.tolist()
     not_nan_idxs=temp_data1_df[temp_data1_df['filename'].isnull()==False].index.tolist()
     # x reference (absolute time from datetime)
-    abstime = (temp_data1_df[acTime_col_data1]-temp_data1_df[acTime_col_data1][0]).dt.total_seconds()
+    abstime = (temp_data1_df[timecol_data1]-temp_data1_df[timecol_data1][0]).dt.total_seconds()
     # interpolations
     
     # ints and strings
@@ -329,7 +352,7 @@ def merge_dfs(data1_df,data2_df,data1_type='EC',data2_type='XAS',
     # those who don't share the same scale will be interpolated as well
     
     # non-empty array indexes
-    #time_arr = (temp_data1_df[acTime_col_data1]-temp_data1_df[acTime_col_data1][0]).dt.total_seconds()
+    #time_arr = (temp_data1_df[timecol_data1]-temp_data1_df[timecol_data1][0]).dt.total_seconds()
     for arr_col in d.index[d]:
         # row indexes with arrays
         np_arr_idxs=temp_data1_df[temp_data1_df[arr_col].isnull()==False].index.tolist()
@@ -367,7 +390,7 @@ def merge_dfs(data1_df,data2_df,data1_type='EC',data2_type='XAS',
         temp_data1_df[a.index[a]] = temp_data1_df[a.index[a]].astype(int)
     except:
         pass
-    #temp_data1_df[acTime_col_data1] = pd.to_datetime(temp_data1_df[acTime_col_data1], format='%Y-%b-%d %H:%M:%S.%f')
+    #temp_data1_df[timecol_data1] = pd.to_datetime(temp_data1_df[timecol_data1], format='%Y-%b-%d %H:%M:%S.%f')
     # merge the info from both dfs
     if interp:
         # add indication of interpolation column
@@ -375,37 +398,42 @@ def merge_dfs(data1_df,data2_df,data1_type='EC',data2_type='XAS',
         temp_data1_df.loc[nan_idxs,'interpolated?']='yes'
         merged_df = pd.merge_asof(data2_df.rename(columns=new_data2_cols_dict),
                                   temp_data1_df.rename(columns=new_data1_cols_dict),
-                                  left_on=new_data2_cols_dict[acTime_col_data2],
-                                  right_on=new_data1_cols_dict[acTime_col_data1],
+                                  left_on=new_data2_cols_dict[timecol_data2],
+                                  right_on=new_data1_cols_dict[timecol_data1],
                                   direction='nearest')
     else:
         merged_df = pd.merge_asof(data2_df.rename(columns=new_data2_cols_dict),
                                   data1_df.rename(columns=new_data1_cols_dict),
-                                  left_on=new_data2_cols_dict[acTime_col_data2],
-                                  right_on=new_data1_cols_dict[acTime_col_data1],
+                                  left_on=new_data2_cols_dict[timecol_data2],
+                                  right_on=new_data1_cols_dict[timecol_data1],
                                   direction='nearest',
                                   tolerance=pd.Timedelta(tol))
 
-    cycle_col=get_cycle_number_col(merged_df)
-    merged_df.dropna(how='all', axis=0, subset=[cycle_col], inplace=True)
-    merged_df.reset_index(drop=True, inplace=True)
+    try:
+        cycle_col=get_cycle_number_col(merged_df)
+        merged_df.dropna(how='all', axis=0, subset=[cycle_col], inplace=True)
+        merged_df.reset_index(drop=True, inplace=True)
+    except:
+        pass
     elapsed_col=next(col for col in merged_df.columns if 'elapsed' in col)
-    merged_df['absolute_time/s_'+data1_type] = (merged_df[new_data1_cols_dict[acTime_col_data1]]-
-                                                merged_df[new_data2_cols_dict[startTime_col_data2]][0]).dt.total_seconds()
-    merged_df['absolute_time/s_'+data2_type] = (merged_df[new_data2_cols_dict[acTime_col_data2]]-
-                                                merged_df[new_data2_cols_dict[startTime_col_data2]][0]).dt.total_seconds()
+    merged_df['absolute_time/s_'+data1_type] = (merged_df[new_data1_cols_dict[timecol_data1]]-
+                                                merged_df[new_data2_cols_dict[start_timecol_data2]][0]).dt.total_seconds()
+    if data2_type=='XAS':
+        merged_df['absolute_time/s_'+data2_type] = (merged_df[new_data2_cols_dict[timecol_data2]]-
+                                                    merged_df[new_data2_cols_dict[start_timecol_data2]][0]).dt.total_seconds()
     #merged_df['absolute_time/min'] = merged_df['absolute time/s']/60
     #merged_df['absolute_time/h'] = merged_df['absolute time/min']/60
     #merged_df['start time XAS'] = merged_df['start time XAS'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
     #merged_df['stop time XAS'] = merged_df['stop time XAS'].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
     if merged_df.shape[0]==0:
-        raise ValueError("Could not correctly merge the EC file to a list of XAS files. Please check the folder selection.")
+        raise ValueError("Could not correctly merge the dataframes. Please check the file selection.")
     else:
         for col in merged_df.columns:
             if pd.api.types.is_datetime64_any_dtype(merged_df[col].dtype):
                 merged_df[col] = merged_df[col].dt.strftime('%Y-%m-%d %H:%M:%S.%f').str[:-3]
                 merged_df[col] = pd.to_datetime(merged_df[col], format='%Y-%m-%d %H:%M:%S.%f')
     print('Merged dataframe ready.')
+    merged_df.attrs={'DF TYPE':data1_type+data2_type}
     return merged_df
 
 # -------------------------------------------- extract data to txt files --------------------------------------------
