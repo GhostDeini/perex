@@ -97,10 +97,10 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
                 index+=1
             else:
                 headerDict=getECHeaderDict(linesEC[newStart:i])
-                if with_settings!=0:
-                    main_settings_df=ECsettingsdf(setLines,delim)
-                    newDict = headerDict | {"Settings": main_settings_df.to_dict()}
-                    attrs = attrs | newDict
+                #if with_settings!=0:
+                main_settings_df=ECsettingsdf(setLines,delim)
+                newDict = headerDict | {"Settings": main_settings_df.to_dict()}
+                attrs = attrs | newDict
                 newStart=setBottom
     df.attrs = attrs
     if with_settings!=0: # get an additional dataframe for settings only
