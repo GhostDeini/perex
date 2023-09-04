@@ -36,7 +36,7 @@ from matplotlib.ticker import MaxNLocator
 from .aux.aux_plot import *
 
 ### plotting EC data only
-def UI_vs_time(df,width=15,height=5):
+def UI_vs_t(df,width=15,height=5):
     '''
     Function to plot a potential/current vs time graph.
     
@@ -268,22 +268,21 @@ def all_XAS(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',color
     cbar.ax.tick_params(labelsize=13)
     return fig
 
-def XAS_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',abstime_col='',
-                colormap='turbo', width=7,height=6,plot_range=None,hlines=False):
+def XAS_vs_t_2D_alpha(df,edge_intensity='inflection',intensity_col='',abstime_col='', colormap='turbo',
+                      width=7,height=6,plot_range=None):
     '''
     Function to plot a 2D intensity graph of all the XAS spectra over time.
     
     :df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
-    :nb_cycle: List of the cycles you want to plot. Or number of the cycle you want to plot. Plots all by default.
-    :edge_intensity: Intensity value to get the edge energy value.
+    :edge_intensity: Intensity value (J) to get the edge energy value. Default is set to inflection point.
     :intensity_col: Name of the column with the intensity values.
+    :abstime_col: Name of the column with the absolute time in seconds.
     :colormap: Name of the colormap you want to use for the plot. Default is set to 'tab20b'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html
     :width: Width of the graph.
     :height: Height of the graph.
     :plot_range: List [x,y] containing the energy range of the plot.
     :return: Plot.
     '''
-    # if no cycle number is selected then it just plots all of them
     if len(intensity_col)==0:
         try:
             intensity_col=get_intensity_col(df)
@@ -333,13 +332,82 @@ def XAS_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',a
     ax.set_ylabel('Time (h)',fontsize=14,labelpad=10)
     ax.tick_params(axis='both', labelsize=13)
     ax.minorticks_on()
-    #ax.set_xlim(rang[0], rang[1])
+    ax.set_xlim(rang[0], rang[1])
     ax.set_ylim(0,df[abstime_col].max()/3600)
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.8)
     cbar.set_label('Normalized absorption',fontsize=14,labelpad=10)
     cbar.ax.tick_params(labelsize=13)
     
+    return fig
+
+def XAS_vs_t_3D_alpha(df,edge_intensity='inflection',intensity_col='',abstime_col='',colormap='viridis',
+                      width=12,height=10,alpha=0.5,plot_range=None):
+    '''
+    Function to plot a 3D graph of all the XAS spectra over time.
+    
+    :df: Pandas dataframe with the data from the EC Lab file merged with the XAS files data.
+    :edge_intensity: Intensity value (J) to get the edge energy value. Default set to inflection point.
+    :intensity_col: Name of the column with the intensity values.
+    :abstime_col: Name of the column with the absolute time in seconds.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'tab20b'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :plot_range: List [x,y] containing the energy range of the plot.
+    :return: Plot.
+    '''
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
+    if len(abstime_col)==0:
+        try:
+            abstime_col=get_abstime_col(df)
+        except:
+            raise ValueError("Please define a proper column for time.")
+    elif abstime_col not in df.columns:
+        raise ValueError("Please define a proper column for time.")
+    edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    energy_col=get_energy_col(df)
+    abstime_s=df[abstime_col]
+
+    if plot_range:
+        if ((len(plot_range)==2) & (type(plot_range)==list)) & (all([isinstance(item, (int,float)) for item in plot_range])):
+            rang=plot_range
+        else:
+            raise ValueError("Not a valid plot_range.")
+    else:
+        rang=[edge.mean()-20,edge.mean()+40]
+        # colormap normalization according to absolute timescale
+        
+    cm = plt.get_cmap(colormap)
+    norm = Normalize(vmin=np.min(abstime_s), vmax=np.max(abstime_s))
+    sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
+
+    # get numpy arrays for all absorption profiles and energy scales
+    energies=np.array(df[energy_col].to_list())
+    spectra=np.array(df[intensity_col].to_list())
+
+    # build plot
+    fig = plt.figure(figsize=(10, 10), dpi= 80, facecolor='w', edgecolor='k')
+    ax = fig.add_subplot(111, projection='3d',proj_type='ortho')
+
+    for i, (p, e, t) in enumerate(zip(spectra,energies,abstime_s/3600)):
+        ax.plot(e, p, zs=t, zdir='y', zorder=(len(spectra) - i), color=sm.to_rgba(abstime_s)[i], alpha=0.5)
+    
+    # axes parameters
+    ax.minorticks_on()
+    ax.set_xlabel('Energy (eV)', labelpad=10, fontsize=14)
+    ax.set_ylabel('Time (h)', labelpad=10, fontsize=14)
+    ax.tick_params(labelsize=13)
+    ax.tick_params(axis='z', pad=6)
+    ax.set_zlabel('Normalized absorption', labelpad=13, fontsize=14)
+    #ax.set_zlim3d(0, 1.2)
+    #ax.view_init(elev=20,azim=260)
+    ax.view_init(20,290)
     return fig
 
 ### plotting combiined XAS + EC
@@ -1669,13 +1737,32 @@ def dEshiftdt_vs_t(df,nb_cycle='all',edge_intensity='inflection',intensity_col='
     #ax.legend(handles=scatter.legend_elements()[0], title="Edge shift", ncol = 3, title_fontsize=12, labelspacing=0.05)
     return fig
 
+def XAS_vs_t_3D(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',abstime_col='',arrows_cycles=True,
+                colormap='viridis',colormap2='plasma',width=12,height=10,alpha=0.5,plot_range=None):
+    '''
+    Function to plot a 2D intensity graph of all the XAS spectra over time.
+    
+    :df: Pandas dataframe with the data from the XAS spectra (either XAS alone or EC+XAS dataframe).
+    :edge_intensity: Intensity value (J) to get the edge energy value. Default set to inflection point.
+    :intensity_col: Name of the column with the intensity spectra.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'tab20b'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :plot_range: List [x,y] containing the energy range of the plot.
+    :return: Plot.
+    '''
+    if df.attrs['DF TYPE']=='XAS':
+        fig=XAS_vs_t_3D_alpha(df,edge_intensity,intensity_col,abstime_col,colormap,width,height,plot_range)
+    elif df.attrs['DF TYPE']=='ECXAS':
+        fig=XAS_vs_t_3D_beta(df,nb_cycle,edge_intensity,intensity_col,arrows_cycles,colormap,colormap2,
+                             width,height,alpha,plot_range)
+    else:
+        raise ValueError("Please define a proper type of dataframe (with XAS data).")
+    return fig
 
-
-###### TO CORRECT FROM HERE
-
-def XANES_vs_t_3D(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',arrows_cycles=True,
-                  colormap_potential='viridis',colormap_cycle='plasma',width=12,height=10,alpha=0.5,
-                  plot_range=None):
+def XAS_vs_t_3D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',arrows_cycles=True,
+                     colormap='viridis',colormap2='plasma',width=12,height=10,alpha=0.5,
+                     plot_range=None):
     '''
     Function to plot a 3D graph of all the XAS spectra over time.
     
@@ -1684,8 +1771,8 @@ def XANES_vs_t_3D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
     :edge_intensity: Intensity value to get the edge energy value.
     :intensity_col: Name of the column with the intensity values.
     :arrows_cycles: Puts an arrow on the graph to mark the beginning of each cycle.
-    :colormap_potential: Name of the colormap you want to use for the plot (according to voltage). Default is set to 'viridis'.
-    :colormap_cycle: Name of the colormap you want to use for the arrows pointing the cycles. Default is set to 'plasma'.  Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html
+    :colormap: Name of the colormap you want to use for the plot (according to voltage). Default is set to 'viridis'.
+    :colormap2: Name of the colormap you want to use for the arrows pointing the cycles. Default is set to 'plasma'.  Default is set to 'plasma'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html
     :width: Width of the graph.
     :height: Height of the graph.
     :alpha: Opacity of the line collections.
@@ -1719,7 +1806,7 @@ def XANES_vs_t_3D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
         rang=[edge.mean()-20,edge.mean()+40]
 
     # colormap from Ewe/V
-    cm=plt.get_cmap(colormap_potential)
+    cm=plt.get_cmap(colormap)
     norm = Normalize(vmin=df_copy[V_col].min(), vmax=df_copy[V_col].max())
     sm = plt.cm.ScalarMappable(cmap=cm, norm=norm)
 
@@ -1766,7 +1853,7 @@ def XANES_vs_t_3D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
 
     df_copy[df_copy[cycle_col]==1].first_valid_index()
     #FIRST ANNOTATION
-    cm_cycle=plt.get_cmap(colormap_cycle)
+    cm_cycle=plt.get_cmap(colormap2)
     # color map from the total number of cycles in the DF, not from the lenght of the input nb_cycles
     color_cycle=cm_cycle(np.linspace(0, 1, len(df_copy[cycle_col].unique())))
     for i,cycle in enumerate(df_copy[cycle_col].unique()):
@@ -1790,8 +1877,33 @@ def XANES_vs_t_3D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
     fig.canvas.mpl_connect('motion_notify_event', update_position)
     return fig
 
-def XANES_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
-                  colormap='tab20b', width=8,height=6,plot_range=None,hlines=False):
+
+    
+def XAS_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',abstime_col='',colormap='turbo',
+                width=7,height=4,plot_range=None):
+    '''
+    Function to plot a 2D intensity graph of all the XAS spectra over time.
+    
+    :df: Pandas dataframe with the data from the XAS spectra (either XAS alone or EC+XAS dataframe).
+    :edge_intensity: Intensity value (J) to get the edge energy value. Default set to inflection point.
+    :intensity_col: Name of the column with the intensity spectra.
+    :colormap: Name of the colormap you want to use for the plot. Default is set to 'tab20b'. More options here https://matplotlib.org/stable/tutorials/colors/colormaps.html
+    :width: Width of the graph.
+    :height: Height of the graph.
+    :plot_range: List [x,y] containing the energy range of the plot.
+    :return: Plot.
+    '''
+    if df.attrs['DF TYPE']=='XAS':
+        fig=XAS_vs_t_2D_alpha(df,edge_intensity,intensity_col,abstime_col,colormap,width,height,plot_range)
+    elif df.attrs['DF TYPE']=='ECXAS':
+        fig=XAS_vs_t_2D_beta(df,nb_cycle,edge_intensity,intensity_col,colormap,width,height,plot_range,hlines=False)
+    else:
+        raise ValueError("Please define a proper type of dataframe (with XAS data).")
+    return fig
+
+
+def XAS_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
+                     colormap='tab20b', width=8,height=6,plot_range=None,hlines=False):
     '''
     Function to plot a 2D intensity graph of all the XAS spectra over time.
     
@@ -1842,7 +1954,7 @@ def XANES_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
     all_profiles = np.array(all_absorption)
     #energy=[]
     #times=[]
-    #zs = list(sub_df['absolute time/h'])
+    #zs = list(sub_df['absolute_time/s_XAS']/3600)
     cmap = plt.get_cmap(colormap)
     #norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
     norm = plt.Normalize(all_profiles.min(), all_profiles.max())
@@ -1890,7 +2002,7 @@ def XANES_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
 
     #fig, (ax0, ax1) = plt.subplots(ncols=2, figsize=(width,height),gridspec_kw={'width_ratios': [1, 1.4]})
 
-    #ax0.scatter(sub_df['Ewe/V'],sub_df['absolute time/h'],color='black',s=2)
+    #ax0.scatter(sub_df['Ewe/V'],sub_df['absolute_time/s_XAS']/3600,color='black',s=2)
     ax0.set_xlabel('Potential vs. Li/Li$^+$ (V)',fontsize=14,labelpad=10)
     ax0.set_ylabel('Time (h)',fontsize=14,labelpad=10)
     ax0.tick_params(axis='both', labelsize=13)
@@ -1917,12 +2029,15 @@ def XANES_vs_t_2D(df,nb_cycle='all',edge_intensity='inflection',intensity_col=''
     # add horizontal lines at potential maxima
     #peaks, _ = find_peaks(sub_df['Ewe/V'], prominence=0.1)
     #for idx in peaks:
-        #ax0.axhline(df['absolute time/h'][idx], color='b', ls='dashed', linewidth=0.7)
-        #ax1.axhline(df['absolute time/h'][idx], color='b', ls='dashed', linewidth=0.7)
+        #ax0.axhline(df['absolute_time/s_XAS']/3600[idx], color='b', ls='dashed', linewidth=0.7)
+        #ax1.axhline(df['absolute_time/s_XAS']/3600[idx], color='b', ls='dashed', linewidth=0.7)
     return fig
 
-def XANES_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
-                       colormap='tab20b', width=8,height=6,plot_range=None,hlines=False):
+
+#### TO UPDATE
+
+def XANES_vs_t_2D_gamma(df,nb_cycle='all',edge_intensity='inflection',intensity_col='',
+                        colormap='tab20b', width=8,height=6,plot_range=None,hlines=False):
     '''
     Function to plot a 2D intensity graph of all the XAS spectra over time.
     
@@ -1937,9 +2052,20 @@ def XANES_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_c
     :return: Plot.
     '''
     # if no cycle number is selected then it just plots all of them
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
     energy_col=get_energy_col(df)
     df_copy=df.copy(deep=True)
+    cycle_col=get_cycle_number_col(df_copy)
+    half_cycle_col=get_half_cycle_col(df_copy)
+    V_col=get_potential_col(df_copy)
+    oxred_col=get_oxred_col(df_copy)
     check_cycles(df_copy)
     nb_cycle=convert_nb_cycle(df_copy,nb_cycle)
 
@@ -1962,17 +2088,17 @@ def XANES_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_c
     all_profiles = np.array(all_absorption)
     #energy=[]
     #times=[]
-    #zs = list(sub_df['absolute time/h'])
+    #zs = list(sub_df['absolute_time/s_XAS']/3600)
     cmap = plt.get_cmap(colormap)
     #norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
     norm = plt.Normalize(all_profiles.min(), all_profiles.max())
     fig, (ax0, ax1) = plt.subplots(ncols=2, figsize=(width,height),gridspec_kw={'width_ratios': [1, 1.4]})
     for cycle in nb_cycle:
-        sub_df=df_copy[df_copy['cycle number']==cycle]
+        sub_df=df_copy[df_copy[cycle_col]==cycle]
         absorption=[]
         energy=[]
         times=[]
-        zs = list(sub_df['absolute time/h'])
+        zs = list(sub_df['absolute_time/s_XAS']/3600)
         for i in sub_df.index:
             x_data=list(pd.Series(sub_df[energy_col][i])[pd.Series(sub_df[energy_col][i]).between(rang[0],rang[1])])
             y_data=list(pd.Series(sub_df[intensity_col][i])[pd.Series(sub_df[energy_col][i]).between(rang[0],rang[1])])
@@ -1987,12 +2113,12 @@ def XANES_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_c
         for time in zs:
             times.append(time*np.ones(profiles.shape[1]))
         times=np.array(times)
-        ax0.scatter(sub_df['Ewe/V'],sub_df['absolute time/h'],color='black',s=2)
+        ax0.scatter(sub_df[V_col],sub_df['absolute_time/s_XAS']/3600,color='black',s=2)
         if hlines:
-            peaks, _ = find_peaks(sub_df['Ewe/V'], prominence=0.1)
+            peaks, _ = find_peaks(sub_df[V_col], prominence=0.1)
             for idx in peaks:
-                ax0.axhline(sub_df['absolute time/h'].iloc[idx], color='b', ls='dashed', linewidth=0.7)
-                ax1.axhline(sub_df['absolute time/h'].iloc[idx], color='b', ls='dashed', linewidth=0.7)
+                ax0.axhline(sub_df['absolute_time/s_XAS'].iloc[idx]/3600, color='b', ls='dashed', linewidth=0.7)
+                ax1.axhline(sub_df['absolute_time/s_XAS'].iloc[idx]/3600, color='b', ls='dashed', linewidth=0.7)
         
         im = ax1.pcolormesh(energies, times, profiles, cmap=cmap, norm=norm)
     # pick the desired colormap, sensible levels, and define a normalization
@@ -2003,14 +2129,14 @@ def XANES_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_c
 
     #fig, (ax0, ax1) = plt.subplots(ncols=2, figsize=(width,height),gridspec_kw={'width_ratios': [1, 1.4]})
 
-    #ax0.scatter(sub_df['Ewe/V'],sub_df['absolute time/h'],color='black',s=2)
+    #ax0.scatter(sub_df['Ewe/V'],sub_df['absolute_time/s_XAS']/3600,color='black',s=2)
     ax0.set_xlabel('Potential vs. Li/Li$^+$ (V)',fontsize=14,labelpad=10)
     ax0.set_ylabel('Time (h)',fontsize=14,labelpad=10)
     ax0.tick_params(axis='both', labelsize=13)
     ax0.minorticks_on()
 
     ax0.set_xlim(2.9,4.8)
-    ax0.set_ylim(0,df_copy['absolute time/h'].max())
+    ax0.set_ylim(0,df_copy['absolute_time/s_XAS'].max()/3600)
     #im = ax1.pcolormesh(energies, times, profiles, cmap=cmap, norm=norm)
     cbar = fig.colorbar(im, ax=ax1,shrink=0.8)
     cbar.set_label('Normalized absorption',fontsize=14,labelpad=10)
@@ -2025,13 +2151,13 @@ def XANES_vs_t_2D_beta(df,nb_cycle='all',edge_intensity='inflection',intensity_c
     ax1.set_yticklabels([])
     ax1.set_yticks([])
     ax1.set_xlim(rang[0], rang[1])
-    ax1.set_ylim(0,df_copy['absolute time/h'].max())
+    ax1.set_ylim(0,df_copy['absolute_time/s_XAS'].max()/3600)
     
     # add horizontal lines at potential maxima
     #peaks, _ = find_peaks(sub_df['Ewe/V'], prominence=0.1)
     #for idx in peaks:
-        #ax0.axhline(df['absolute time/h'][idx], color='b', ls='dashed', linewidth=0.7)
-        #ax1.axhline(df['absolute time/h'][idx], color='b', ls='dashed', linewidth=0.7)
+        #ax0.axhline(df['absolute_time/s_XAS']/3600[idx], color='b', ls='dashed', linewidth=0.7)
+        #ax1.axhline(df['absolute_time/s_XAS']/3600[idx], color='b', ls='dashed', linewidth=0.7)
     return fig
 
 ##### to do after performing MRC ALS
@@ -2053,14 +2179,28 @@ def Eshift_conc_vs_U_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     :alpha: Opacity of the points.
     :return: Plot.
     '''
+    # if no cycle number is selected then it just plots all of them
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
+    energy_col=get_energy_col(df)
     df_copy=df.copy(deep=True)
+    cycle_col=get_cycle_number_col(df_copy)
+    half_cycle_col=get_half_cycle_col(df_copy)
+    V_col=get_potential_col(df_copy)
+    oxred_col=get_oxred_col(df_copy)
     check_cycles(df_copy)
     nb_cycle=convert_nb_cycle(df_copy,nb_cycle)
+        
 
     #colormap according to total number of cycles
     cm=plt.get_cmap(colormap)
-    color_dqdv=cm(np.linspace(0, 1, len(df_copy['cycle number'].unique())))
+    color_dqdv=cm(np.linspace(0, 1, len(df_copy[cycle_col].unique())))
     
     fig = plt.figure(constrained_layout=True)
     fig.set_size_inches(width, height)
@@ -2070,7 +2210,7 @@ def Eshift_conc_vs_U_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     mins = []
     widths = []
     mode = []
-    for index, row in df_copy.groupby('half cycle').agg({'Ewe/V': ['min', 'max'], 'ox/red':['mean']}).iterrows():
+    for index, row in df_copy.groupby(half_cycle_col).agg({V_col: ['min', 'max'], oxred_col:['mean']}).iterrows():
         width=row[1]-row[0]
         if width !=0:
             half_cycles.append(index)
@@ -2084,14 +2224,14 @@ def Eshift_conc_vs_U_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     # PLOTTING THE EDGE EVOLUTION
     art_idx=0
     for col in range(len(half_cycles)):
-        condition=df_copy['half cycle']==half_cycles[col]
+        condition=df_copy[half_cycle_col]==half_cycles[col]
         index_cm=col//2
         ax0 = fig.add_subplot(gs_top[0,col])
-        ax0.plot(df_copy[condition]['Ewe/V'],edge[art_idx:art_idx+len(df_copy[condition]['Ewe/V'])],
+        ax0.plot(df_copy[condition][V_col],edge[art_idx:art_idx+len(df_copy[condition][V_col])],
                  alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax0.scatter(df_copy[condition]['Ewe/V'],edge[art_idx:art_idx+len(df_copy[condition]['Ewe/V'])],
+        ax0.scatter(df_copy[condition][V_col],edge[art_idx:art_idx+len(df_copy[condition][V_col])],
                     label=str(half_cycles[col]),color=color_dqdv[index_cm],s=dotsize,zorder=1)
-        art_idx=art_idx+len(df_copy[condition]['Ewe/V'])
+        art_idx=art_idx+len(df_copy[condition][V_col])
         # remove last tick label and first tick label for the necessary subplots
         #ax.yaxis.set_ticklabels([])
         ax0.get_xaxis().set_ticks([])
@@ -2111,14 +2251,14 @@ def Eshift_conc_vs_U_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     art_idx=0
     # PLOTTING CONCENTRATION EVOLUTION
     for col in range(len(half_cycles)):
-        condition=df_copy['half cycle']==half_cycles[col]
+        condition=df_copy[half_cycle_col]==half_cycles[col]
         ax1 = fig.add_subplot(gs_top[1,col])
         for conc in conc_array:
-            ax1.plot(df_copy[condition]['Ewe/V'],conc[art_idx:art_idx+len(df_copy[condition]['Ewe/V'])],
+            ax1.plot(df_copy[condition][V_col],conc[art_idx:art_idx+len(df_copy[condition][V_col])],
                      alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-            ax1.scatter(df_copy[condition]['Ewe/V'],conc[art_idx:art_idx+len(df_copy[condition]['Ewe/V'])],s=dotsize*5/6,zorder=1)
+            ax1.scatter(df_copy[condition][V_col],conc[art_idx:art_idx+len(df_copy[condition][V_col])],s=dotsize*5/6,zorder=1)
             #ax1.scatter(output_cell4_df[condition]['Ewe/V'],conc[art_idx:art_idx+len(output_cell4_df[condition]['Ewe/V'])],s=15)
-        art_idx=art_idx+len(df_copy[condition]['Ewe/V'])
+        art_idx=art_idx+len(df_copy[condition][V_col])
 
         xticks = ticker.MaxNLocator(round(widths[col]/0.25))
 
@@ -2165,20 +2305,37 @@ def Eshift_conc_vs_x_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     :alpha: Opacity of the points.
     :return: Plot.
     '''
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
     df_copy=df.copy(deep=True)
+    cycle_col=get_cycle_number_col(df_copy)
+    half_cycle_col=get_half_cycle_col(df_copy)
+    V_col=get_potential_col(df_copy)
+    oxred_col=get_oxred_col(df_copy)
+    df_copy['x_from_edge']=1-(edge-edge.min())/(edge.max()-edge.min())
     check_cycles(df_copy)
     nb_cycle=convert_nb_cycle(df_copy,nb_cycle)
     
-    if (x_col=='x') & ('calculated x' in df_copy.columns):
-        x_col='calculated x'
-    elif x_col in df_copy.columns:
-        x_col=x_col
-    else: raise ValueError('x not found in the dataframe columns.')
+    try:
+        if 'calculated_x' in df_copy.columns:
+            x_col='calculated_x'
+        elif 'calculated_x_EC' in df_copy.columns:
+            x_col='calculated_x_EC'
+        elif 'x' in df_copy.columns:
+            x_col='x'
+        else:
+            x_col='x_EC'
+    except: raise ValueError('x not found in the dataframe columns.')
     
     #colormap according to total number of cycles
     cm=plt.get_cmap(colormap)
-    color_dqdv=cm(np.linspace(0, 1, len(df_copy['cycle number'].unique())))
+    color_dqdv=cm(np.linspace(0, 1, len(df_copy[cycle_col].unique())))
     
     fig = plt.figure(constrained_layout=True)
     fig.set_size_inches(width, height)
@@ -2188,7 +2345,7 @@ def Eshift_conc_vs_x_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     mins = []
     widths = []
     mode = []
-    for index, row in df_copy.groupby('half cycle').agg({x_col: ['min', 'max'], 'ox/red':['mean']}).iterrows():
+    for index, row in df_copy.groupby(half_cycle_col).agg({x_col: ['min', 'max'], oxred_col:['mean']}).iterrows():
         width=row[1]-row[0]
         if width !=0:
             half_cycles.append(index)
@@ -2202,7 +2359,7 @@ def Eshift_conc_vs_x_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     # PLOTTING THE EDGE EVOLUTION
     art_idx=0
     for col in range(len(half_cycles)):
-        condition=df_copy['half cycle']==half_cycles[col]
+        condition=df_copy[half_cycle_col]==half_cycles[col]
         index_cm=col//2
         ax0 = fig.add_subplot(gs_top[0,col])
         ax0.plot(df_copy[condition][x_col],edge[art_idx:art_idx+len(df_copy[condition][x_col])],
@@ -2227,7 +2384,7 @@ def Eshift_conc_vs_x_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='inf
     art_idx=0
     # PLOTTING CONCENTRATION EVOLUTION
     for col in range(len(half_cycles)):
-        condition=df_copy['half cycle']==half_cycles[col]
+        condition=df_copy[half_cycle_col]==half_cycles[col]
         ax1 = fig.add_subplot(gs_top[1,col])
         for conc in conc_array:
             ax1.plot(df_copy[condition][x_col],conc[art_idx:art_idx+len(df_copy[condition][x_col])],
@@ -2277,15 +2434,28 @@ def U_Eshift_conc_vs_t_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='i
     :alpha: Opacity of the points.
     :return: Plot.
     '''
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
     df_copy=df.copy(deep=True)
+    cycle_col=get_cycle_number_col(df_copy)
+    half_cycle_col=get_half_cycle_col(df_copy)
+    V_col=get_potential_col(df_copy)
+    oxred_col=get_oxred_col(df_copy)
+    df_copy['x_from_edge']=1-(edge-edge.min())/(edge.max()-edge.min())
     check_cycles(df_copy)
     nb_cycle=convert_nb_cycle(df_copy,nb_cycle)
+    
 
     #colormap according to total number of cycles
     #cm=plt.get_cmap(colormap)
     #color_dqdv=cm(np.linspace(0, 1, len(df['cycle number'].unique())))
-    norm = Normalize(vmin=int(df_copy['cycle number'].min()), vmax=int(df_copy['cycle number'].max()))
+    norm = Normalize(vmin=int(df_copy[cycle_col].min()), vmax=int(df_copy[cycle_col].max()))
     fig = plt.figure(constrained_layout=True)
     fig.set_size_inches(width, height)
 
@@ -2294,23 +2464,23 @@ def U_Eshift_conc_vs_t_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='i
     ax0 = plt.subplot(gs[0])
     ax1 = plt.subplot(gs[1])
     ax2 = plt.subplot(gs[2])
-    condition = df_copy['cycle number'].isin(nb_cycle)
+    condition = df_copy[cycle_col].isin(nb_cycle)
     if greyline:
-        ax0.plot(df_copy['absolute time/h'][condition],df_copy['Ewe/V'][condition],
+        ax0.plot(df_copy['absolute_time/s_XAS'][condition]/3600,df_copy[V_col][condition],
                  alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax1.plot(df_copy['absolute time/h'][condition], edge[condition],
+        ax1.plot(df_copy['absolute_time/s_XAS'][condition]/3600, edge[condition],
                  alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
     # PLOTTING THE POTENTIAL
-    ax0.scatter(df_copy['absolute time/h'][condition],df_copy['Ewe/V'][condition], color='black',s=dotsize*3/5, marker="_",
+    ax0.scatter(df_copy['absolute_time/s_XAS'][condition]/3600,df_copy[V_col][condition], color='black',s=dotsize*3/5, marker="_",
                 zorder=1)
     # PLOTTING THE EDGE SHIFT
-    ax1.scatter(df_copy['absolute time/h'][condition], edge[condition], s=dotsize, c=df_copy['cycle number'][condition], 
+    ax1.scatter(df_copy['absolute_time/s_XAS'][condition]/3600, edge[condition], s=dotsize, c=df_copy[cycle_col][condition], 
                 cmap=colormap, norm=norm, zorder=1)
     # PLOTTING THE CONCENTRATION PROFILE
     for conc in conc_array:
         if greyline:
-            ax2.plot(df_copy[condition]['absolute time/h'],conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax2.scatter(df_copy[condition]['absolute time/h'],conc,s=dotsize*5/6,zorder=1)
+            ax2.plot(df_copy[condition]['absolute_time/s_XAS']/3600,conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax2.scatter(df_copy[condition]['absolute_time/s_XAS']/3600,conc,s=dotsize*5/6,zorder=1)
             
     # axes parameters
     ax0.minorticks_on()
@@ -2327,15 +2497,15 @@ def U_Eshift_conc_vs_t_stacked(df,nb_cycle='all',conc_array=[],edge_intensity='i
     # x
     ax2.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = df_copy['absolute time/h'].max()-df_copy['absolute time/h'].min()
-    x_min=df_copy['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=df_copy['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
+    full_range_x = df_copy['absolute_time/s_XAS'].max()/3600-df_copy['absolute_time/s_XAS'].min()/3600
+    x_min=df_copy['absolute_time/s_XAS'].min()/3600-(full_range_x)*margin/(1-margin*2)
+    x_max=df_copy['absolute_time/s_XAS'].max()/3600+(full_range_x)*margin/(1-margin*2)
     #ax0.set_xlim(x_min,x_max)
     #ax1.set_xlim(x_min,x_max)
     #ax2.set_xlim(x_min,x_max)
-    ax0.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
-    ax1.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
-    ax2.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
+    ax0.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
+    ax1.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
+    ax2.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
     # y label
     ax0.set_ylabel('Potential vs. Li/Li$^+$ (V)',fontsize=14,labelpad=10)
     ax1.set_ylabel('Edge @ J='+str(edge_intensity)+' (eV)',fontsize=14,labelpad=10)
@@ -2363,15 +2533,38 @@ def U_x_Eshift_conc_vs_t_stacked(df,nb_cycle='all',conc_array=[],edge_intensity=
     :alpha: Opacity of the points.
     :return: Plot.
     '''
+    if len(intensity_col)==0:
+        try:
+            intensity_col=get_intensity_col(df)
+        except:
+            raise ValueError("Please define a proper column for the intensity.")
+    elif intensity_col not in df.columns:
+        raise ValueError("Please define a proper column for the intensity.")
     edge=get_edge(df,intensity_val=edge_intensity,intensity_col=intensity_col)
     df_copy=df.copy(deep=True)
+    cycle_col=get_cycle_number_col(df_copy)
+    half_cycle_col=get_half_cycle_col(df_copy)
+    V_col=get_potential_col(df_copy)
+    oxred_col=get_oxred_col(df_copy)
+    df_copy['x_from_edge']=1-(edge-edge.min())/(edge.max()-edge.min())
     check_cycles(df_copy)
     nb_cycle=convert_nb_cycle(df_copy,nb_cycle)
+    
+    try:
+        if 'calculated_x' in df_copy.columns:
+            x_col='calculated_x'
+        elif 'calculated_x_EC' in df_copy.columns:
+            x_col='calculated_x_EC'
+        elif 'x' in df_copy.columns:
+            x_col='x'
+        else:
+            x_col='x_EC'
+    except: raise ValueError('x not found in the dataframe columns.')
 
     #colormap according to total number of cycles
     #cm=plt.get_cmap(colormap)
     #color_dqdv=cm(np.linspace(0, 1, len(df['cycle number'].unique())))
-    norm = Normalize(vmin=int(df_copy['cycle number'].min()), vmax=int(df_copy['cycle number'].max()))
+    norm = Normalize(vmin=int(df_copy[cycle_col].min()), vmax=int(df_copy[cycle_col].max()))
     fig = plt.figure(constrained_layout=True)
     fig.set_size_inches(width, height)
 
@@ -2381,26 +2574,26 @@ def U_x_Eshift_conc_vs_t_stacked(df,nb_cycle='all',conc_array=[],edge_intensity=
     ax1 = plt.subplot(gs[1])
     ax2 = plt.subplot(gs[2])
     ax3 = plt.subplot(gs[3])
-    condition = df_copy['cycle number'].isin(nb_cycle)
+    condition = df_copy[cycle_col].isin(nb_cycle)
     if greyline:
-        ax0.plot(df_copy['absolute time/h'][condition],df_copy['Ewe/V'][condition],
+        ax0.plot(df_copy['absolute_time/s_XAS'][condition]/3600,df_copy[V_col][condition],
                  alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax1.plot(df_copy['absolute time/h'][condition], edge[condition],
+        ax1.plot(df_copy['absolute_time/s_XAS'][condition]/3600, edge[condition],
                  alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
     # PLOTTING THE POTENTIAL
-    ax0.scatter(df_copy['absolute time/h'][condition],df_copy['Ewe/V'][condition], color='black',s=dotsize*3/5, marker="_",
+    ax0.scatter(df_copy['absolute_time/s_XAS'][condition]/3600,df_copy[V_col][condition], color='black',s=dotsize*3/5, marker="_",
                 zorder=1)
     # PLOTTING X
-    ax1.scatter(df_copy['absolute time/h'][condition],df_copy[x_col][condition], color='black',s=dotsize*3/5, marker="_",
+    ax1.scatter(df_copy['absolute_time/s_XAS'][condition]/3600,df_copy[x_col][condition], color='black',s=dotsize*3/5, marker="_",
                 zorder=1)
     # PLOTTING THE EDGE SHIFT
-    ax2.scatter(df_copy['absolute time/h'][condition], edge[condition], s=dotsize, c=df_copy['cycle number'][condition], 
+    ax2.scatter(df_copy['absolute_time/s_XAS'][condition]/3600, edge[condition], s=dotsize, c=df_copy[cycle_col][condition], 
                 cmap=colormap, norm=norm, zorder=1)
     # PLOTTING THE CONCENTRATION PROFILE
     for conc in conc_array:
         if greyline:
-            ax3.plot(df_copy[condition]['absolute time/h'],conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
-        ax3.scatter(df_copy[condition]['absolute time/h'],conc,s=dotsize*5/6,zorder=1)
+            ax3.plot(df_copy[condition]['absolute_time/s_XAS']/3600,conc,alpha=0.8,linewidth=linewidth,color='lightgrey',zorder=0)
+        ax3.scatter(df_copy[condition]['absolute_time/s_XAS']/3600,conc,s=dotsize*5/6,zorder=1)
             
     # axes parameters
     ax0.minorticks_on()
@@ -2421,13 +2614,13 @@ def U_x_Eshift_conc_vs_t_stacked(df,nb_cycle='all',conc_array=[],edge_intensity=
     # x
     ax3.set_xlabel("Time (h)",fontsize=14,labelpad=10)
     margin = 0.02
-    full_range_x = df_copy['absolute time/h'].max()-df_copy['absolute time/h'].min()
-    x_min=df_copy['absolute time/h'].min()-(full_range_x)*margin/(1-margin*2)
-    x_max=df_copy['absolute time/h'].max()+(full_range_x)*margin/(1-margin*2)
-    ax0.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
-    ax1.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
-    ax2.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
-    ax3.set_xlim(df_copy['absolute time/h'].min(),df_copy['absolute time/h'].max())
+    full_range_x = df_copy['absolute_time/s_XAS'].max()/3600-df_copy['absolute_time/s_XAS'].min()/3600
+    x_min=df_copy['absolute_time/s_XAS'].min()/3600-(full_range_x)*margin/(1-margin*2)
+    x_max=df_copy['absolute_time/s_XAS'].max()/3600+(full_range_x)*margin/(1-margin*2)
+    ax0.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
+    ax1.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
+    ax2.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
+    ax3.set_xlim(df_copy['absolute_time/s_XAS'].min()/3600,df_copy['absolute_time/s_XAS'].max()/3600)
     # y label
     ax0.set_ylabel('Potential vs. Li/Li$^+$ (V)',fontsize=14,labelpad=10)
     ax1.set_ylabel('x',fontsize=14,labelpad=10)
