@@ -46,7 +46,10 @@ def getECdf_single(EC_filename, with_settings=0, acTime=1):
     # check which delimiter is used for decimals
     delim=checkDelim(rawEC)
     # get number of header lines
-    mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
+    try:
+        mainHeaderIdx=int(re.findall("\d+", next(line for line in linesEC if 'Nb header lines' in line))[0])-1
+    except:
+        mainHeaderIdx=0
     rawHeader = "".join(linesEC[:mainHeaderIdx])
     # MAIN dataframe
     df=pd.read_csv(EC_filename, header=mainHeaderIdx, encoding='ISO-8859-1', sep="\t", skip_blank_lines=False, decimal=delim)
